@@ -10,8 +10,10 @@ const options = {
       description: 'Complete API documentation for Advika Flowers Inventory Management System',
     },
     servers: [
-      { url: 'http://localhost:5000', description: 'Local Development' },
-    ],
+  {
+    url: "https://api.advikadecore.com",
+  },
+],
     components: {
       securitySchemes: {
         bearerAuth: {
