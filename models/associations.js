@@ -1,0 +1,38 @@
+const Product = require('./product');
+const Transaction = require('./transaction');
+const User = require('./userdetails');
+const InventoTracking = require('./inventoryTracking');
+const Repayment = require('./repayments');
+const MissingItem = require('./MissingItem');
+const CustomerCount = require('./CustomerCount');
+const Supplier = require('./supplier');
+const ProductSupplier = require('./productsupplier');
+const PurchaseOrder = require('./PurchaseOrder');
+const PurchaseOrderItem = require('./PurchaseOrderItem');
+
+// PurchaseOrder <-> PurchaseOrderItem
+PurchaseOrder.hasMany(PurchaseOrderItem, { foreignKey: 'order_id', as: 'PurchaseOrderItems' });
+PurchaseOrderItem.belongsTo(PurchaseOrder, { foreignKey: 'order_id' });
+
+// PurchaseOrderItem <-> Product
+PurchaseOrderItem.belongsTo(Product, { foreignKey: 'product_id', as: 'Product' });
+
+// PurchaseOrderItem <-> Supplier
+PurchaseOrderItem.belongsTo(Supplier, { foreignKey: 'supplier_id', as: 'Supplier' });
+
+// ProductSupplier <-> Supplier
+ProductSupplier.belongsTo(Supplier, { foreignKey: 'supplier_id' });
+
+module.exports = {
+  Product,
+  Transaction,
+  User,
+  InventoTracking,
+  Repayment,
+  MissingItem,
+  CustomerCount,
+  Supplier,
+  ProductSupplier,
+  PurchaseOrder,
+  PurchaseOrderItem,
+};

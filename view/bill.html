@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Billing System</title>
+    <!-- Link to Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav"
+            aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav">
+                <li class="nav-item">
+                    <a class="nav-link text-white" href="/user">Billing</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link text-white" href="/transactions/dailytransaction">Daily Transaction</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link text-white" href="/transactions/stock">Stock</a>
+                </li>
+                <li class="nav-item active">
+                    <a class="nav-link text-white" href="/repayments/repaymentpage">Pending Repayments</a>
+                </li>
+            </ul>
+        </div>
+    </nav>
+<div class="container" id="container">
+<div class="container my-5">
+    <h2 class="text-center mb-4">Billing System</h2>
+
+    <!-- Metrics Section -->
+    <div class="row mb-4">
+        <!-- Daily Sales -->
+        <div class="col-6 col-md-3">
+            <div class="card bg-light">
+                <div class="card-body">
+                    <h5 class="card-title">Daily Sales</h5>
+                    <p class="card-text" id="dailySales">$0.00</p>
+                </div>
+            </div>
+        </div>
+        <!-- Daily Profit -->
+        <div class="col-6 col-md-3">
+            <div class="card bg-light">
+                <div class="card-body">
+                    <h5 class="card-title">Daily Profit</h5>
+                    <p class="card-text" id="dailyProfit">$0.00</p>
+                </div>
+            </div>
+        </div>
+        <!-- Monthly Sales -->
+        <div class="col-6 col-md-3">
+            <div class="card bg-light">
+                <div class="card-body">
+                    <h5 class="card-title">Monthly Sales</h5>
+                    <p class="card-text" id="monthlySales">$0.00</p>
+                </div>
+            </div>
+        </div>
+        <!-- Monthly Profit -->
+        <div class="col-6 col-md-3">
+            <div class="card bg-light">
+                <div class="card-body">
+                    <h5 class="card-title">Monthly Profit</h5>
+                    <p class="card-text" id="monthlyProfit">$0.00</p>
+                </div>
+            </div>
+        </div>
+    </div>
+<div class="d-flex justify-content-end mb-4">
+        <button id="sendStockEmail" class="btn btn-success">Send Stock Email</button>
+    </div>
+    <form id="billingForm">
+        <div class="table-responsive">
+            <table class="table table-bordered" id="itemsTable">
+                <thead class="table-light">
+                    <tr>
+                        <th>Item Name</th>
+                        <th>Quantity</th>
+                        <th>Price per Item</th>
+                        <th>Total</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr class="item-row">
+                        <td><input type="text" name="item_name[]"  list="productList" class="form-control" placeholder="Item Name" required></td>
+                        <td><input type="number" name="quantity[]" class="form-control quantity" min="1" value="1" required></td>
+                        <td><input type="number" name="price[]" class="form-control price" min="0" value="0" required></td>
+                        <td><input type="number" name="total[]" class="form-control total" value="0" readonly></td>
+                        <td><button type="button" class="btn btn-danger remove-item">Remove</button></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="d-flex justify-content-between">
+            <button type="button" id="addItem" class="btn btn-primary">Add Item</button>
+            <strong>Total Amount: $<span id="totalAmount">0</span></strong>
+        </div><br>
+        <!-- Submit Button -->
+<button type="button" id="submitButton" class="btn btn-success">Submit</button>
+
+    </form>
+</div>
+<div class="card bg-light mb-4">
+    <div class="card-body text-center">
+        <h5 class="card-title">Today's Customers</h5>
+        <button id="decreaseCustomer" class="btn btn-danger">-</button>
+        <span id="customerCount" class="mx-3">0</span>
+        <button id="increaseCustomer" class="btn btn-success">+</button>
+    </div>
+</div>
+<datalist id="productList"></datalist>
+<!-- Link to Bootstrap JS (for functionality like tooltips, popovers, etc.) -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+<script src="/js/bill.js"></script>
+</div>
+</body>
+</html>

@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stock Management</title>
+    <style>
+            .table-responsive {
+        overflow-x: auto; /* Enables horizontal scrolling */
+    }
+    .btn {
+    padding: 8px 12px;  /* Increase padding */
+    font-size: 14px;    /* Adjust font size */
+}
+
+    </style>
+    <!-- Link to Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav"
+            aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav">
+                <li class="nav-item">
+                    <a class="nav-link text-white" href="/user">Billing</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link text-white" href="/transactions/dailytransaction">Daily Transaction</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link text-white" href="/transactions/stock">Stock</a>
+                </li>
+                <li class="nav-item active">
+                    <a class="nav-link text-white" href="/repayments/repaymentpage">Pending Repayments</a>
+                </li>
+            </ul>
+        </div>
+    </nav>
+    <div class="container" id="container">
+    <div class="container my-5">
+        <h2 class="text-center mb-4">Stock Management</h2>
+
+        <!-- Total Inventory Value -->
+        <div class="d-flex justify-content-between mb-4">
+            <h4>Current Inventory</h4>
+            <div>
+                <span class="h5">Total Inventory Value: </span>
+                <span id="totalInventoryValue" class="h5">$0.00</span> <!-- This will show the total value -->
+            </div>
+            <button id="addProduct" class="btn btn-primary">Add New Product</button>
+        </div>
+
+        <!-- Search Bar -->
+        <div class="mb-3">
+            <label for="searchProduct" class="form-label">Search Products</label>
+            <input type="text" class="form-control" id="searchProduct" placeholder="Search by name">
+        </div>
+
+        <div class="table-responsive">
+            <table class="table table-bordered" id="inventoryTable">
+                <thead class="table-light">
+                    <tr>
+                        <th>Product Name</th>
+                        <th>Quantity in Stock</th>
+                        <th>Price per Unit</th>
+                        <th>Total Value</th>
+                        <th>Threeshold</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="inventoryTableBody">
+                    <!-- Products will be dynamically added here -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <!-- Modal for Adding/Editing Products -->
+    <div class="modal fade" id="productModal" tabindex="-1" aria-labelledby="productModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="productModalLabel">Add New Product</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="productForm">
+                        <div class="mb-3">
+                            <label for="productName" class="form-label">Product Name</label>
+                            <input type="text" class="form-control" id="productName" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="productQuantity" class="form-label">Quantity in Stock</label>
+                            <input type="number" class="form-control" id="productQuantity" value="1" required min="1">
+                        </div>
+                        <div class="mb-3">
+                            <label for="productPrice" class="form-label">Price per Unit</label>
+                            <input type="number" class="form-control" id="productPrice" value="0" required min="0">
+                        </div>
+                        <div class="mb-3">
+                            <label for="productThreshold" class="form-label">Minimum Threshold</label>
+                            <input type="number" class="form-control" id="productThreshold" value="5" required min="0">
+                        </div>
+                        <button type="submit" class="btn btn-success">Save Product</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Link to Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <script src="/js/inventory.js"></script>
+    </div>
+</body>
+</html>

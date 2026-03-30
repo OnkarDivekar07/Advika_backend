@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Daily Transactions</title>
+    <!-- Include Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+    <!-- Navigation Bar -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav"
+            aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav">
+                <li class="nav-item">
+                    <a class="nav-link text-white" href="/user">Billing</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link text-white" href="/transactions/dailytransaction">Daily Transaction</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link text-white" href="/transactions/stock">Stock</a>
+                </li>
+                <li class="nav-item active">
+                    <a class="nav-link text-white" href="/repayments/repaymentpage">Pending Repayments</a>
+                </li>
+            </ul>
+        </div>
+    </nav>
+<div class="container" id="container">
+    <!-- Main Content Section -->
+    <div class="container my-5">
+        <h2 class="text-center mb-4">Daily Transactions</h2>
+
+        <!-- Table to display transactions -->
+        <div class="table-responsive">
+            <table class="table table-bordered" id="transactionsTable">
+                <thead class="table-light">
+                    <tr>
+                        <th>Item No</th>
+                        <th>Date</th>
+                        <th>Items</th>
+                        <th>Quantity</th>
+                        <th>Total Amount</th>
+                        <th>Profit</th>
+                    </tr>
+                </thead>
+                <tbody id="transactionsTableBody">
+                    <!-- Transactions will be populated here dynamically -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Link to Bootstrap JS and Axios -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+
+    <script>
+        // Function to render the transactions in the table
+        function renderTransactions(transactions) {
+            const transactionsTableBody = document.getElementById('transactionsTableBody');
+            transactionsTableBody.innerHTML = ''; // Clear existing rows
+
+            transactions.forEach(transaction => {
+                const row = document.createElement('tr');
+
+                // Format the item data and date
+                const itemName = transaction.itemsPurchased; // Single item name
+                const formattedDate = new Date(transaction.date).toLocaleDateString(); // Format date
+
+                row.innerHTML = `
+                    <td>${transaction.id}</td>  <!-- Invoice ID -->
+                    <td>${formattedDate}</td>  <!-- Date -->
+                    <td>${itemName}</td>  <!-- Item name -->
+                    <td>${transaction.quantity}</td>  <!-- Quantity -->
+                    <td>$${transaction.totalAmount.toFixed(2)}</td>  <!-- Total Amount -->
+                    <td>$${transaction.profit.toFixed(2)}</td>  <!-- Profit -->
+                `;
+
+                transactionsTableBody.appendChild(row); // Append the row to the table
+            });
+        }
+
+        // Fetch transaction data from the backend using Axios
+        axios.get('http://localhost:5000/transactions/dailyalltransaction')
+            .then(response => {
+                const transactions = response.data; // Assuming the response is an array of transactions
+                renderTransactions(transactions); // Call render function
+            })
+            .catch(error => {
+                console.error('Error fetching transactions:', error); // Log any errors
+            });
+    </script>
+    </div>
+</body>
+</html>
