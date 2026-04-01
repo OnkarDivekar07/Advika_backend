@@ -5,6 +5,7 @@ const PurchaseOrderItem = require('@root/models/PurchaseOrderItem');
 const sequelize = require('@utils/db');
 const { uploadToS3, deleteFromS3 } = require('@utils/AWSUploads');
 const CustomError = require('@utils/customError');
+const { invalidateProductCache } = require('@utils/productCache'); // ← was missing
 
 const ALLOWED_UNITS = ['pcs', 'jodi', 'dozen'];
 
@@ -31,7 +32,9 @@ const addProducts = async (input) => {
     };
   });
 
-  return Product.bulkCreate(sanitized);
+  const created = await Product.bulkCreate(sanitized);
+  await invalidateProductCache();
+  return created;
 };
 
 const getAllProducts = async () => Product.findAll();
@@ -54,17 +57,17 @@ const updateProduct = async (id, data) => {
   if (data.upper_threshold !== undefined) updates.upper_threshold = toNum(data.upper_threshold, parseInt) ?? product.upper_threshold;
 
   await product.update(updates);
+  await invalidateProductCache();
 };
 
 const deleteProduct = async (id) => {
   const product = await Product.findByPk(id);
   if (!product) throw new CustomError('Product not found', 404);
   await product.destroy();
+  await invalidateProductCache();
 };
 
 const addStock = async ({ productId, addQuantity, price, lower_threshold, upper_threshold }) => {
-  // Fix: do NOT manually rollback before throwing — use Sequelize managed transaction callback
-  // which auto-rolls back on any thrown error
   return sequelize.transaction(async (t) => {
     const product = await Product.findByPk(productId, { transaction: t });
     if (!product) throw new CustomError('Product not found', 404);
@@ -85,7 +88,6 @@ const addStock = async ({ productId, addQuantity, price, lower_threshold, upper_
 
     await product.update(updateData, { transaction: t });
 
-    // Mark the most recent active purchase order item as received
     const item = await PurchaseOrderItem.findOne({
       where: {
         product_id: productId,
@@ -106,6 +108,13 @@ const addStock = async ({ productId, addQuantity, price, lower_threshold, upper_
       upper_threshold: updateData.upper_threshold ?? product.upper_threshold,
     };
   });
+};
+
+// Thin wrapper so invalidation runs AFTER the transaction commits
+const addStockAndInvalidate = async (payload) => {
+  const result = await addStock(payload);
+  await invalidateProductCache();
+  return result;
 };
 
 const uploadImage = async (id, file) => {
@@ -132,6 +141,7 @@ const uploadImage = async (id, file) => {
   const imageUrl = await uploadToS3(compressedBuffer, key, 'image/jpeg');
 
   await product.update({ imageUrl });
+  await invalidateProductCache();
   return imageUrl;
 };
 
@@ -143,12 +153,14 @@ const deleteImage = async (id) => {
   const key = product.imageUrl.split('.com/')[1];
   if (key) await deleteFromS3(key);
   await product.update({ imageUrl: null });
+  await invalidateProductCache();
 };
 
 const updateMarathiName = async (id, marathiName) => {
   const product = await Product.findByPk(id);
   if (!product) throw new CustomError('Product not found', 404);
   await product.update({ marathiName });
+  await invalidateProductCache();
 };
 
 const updateDefaultUnit = async (id, defaultUnit) => {
@@ -158,6 +170,7 @@ const updateDefaultUnit = async (id, defaultUnit) => {
   const product = await Product.findByPk(id);
   if (!product) throw new CustomError('Product not found', 404);
   await product.update({ defaultUnit });
+  await invalidateProductCache();
   return { id: product.id, name: product.name, defaultUnit };
 };
 
@@ -167,7 +180,7 @@ module.exports = {
   getProductById,
   updateProduct,
   deleteProduct,
-  addStock,
+  addStock: addStockAndInvalidate, // wraps addStock + cache invalidation
   uploadImage,
   deleteImage,
   updateMarathiName,

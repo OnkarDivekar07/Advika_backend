@@ -12,16 +12,19 @@ exports.addProduct = async (req, res, next) => {
 
 exports.getProduct = async (req, res, next) => {
   try {
-    // ── Redis cache: serve from cache if available ─────────────────
+    // ── Cache hit: return plain JSON directly from Redis ───────────
     const cached = await getCachedProducts();
     if (cached) {
+      console.log('[Cache] HIT ✅ products:all');
       return res.sendResponse({ message: 'Products fetched successfully', data: cached });
     }
 
-    // ── Cache miss: fetch from DB and cache the result ─────────────
+    // ── Cache miss: fetch from DB, convert to plain objects, cache ─
+    console.log('[Cache] MISS — fetching from DB');
     const products = await productService.getAllProducts();
-    await setCachedProducts(products);
-    res.sendResponse({ message: 'Products fetched successfully', data: products });
+    const plainProducts = products.map((p) => p.toJSON()); // strip Sequelize metadata
+    await setCachedProducts(plainProducts);
+    res.sendResponse({ message: 'Products fetched successfully', data: plainProducts });
   } catch (err) {
     next(err);
   }
