@@ -37,7 +37,22 @@ const addProducts = async (input) => {
   return created;
 };
 
-const getAllProducts = async () => Product.findAll();
+const getAllProducts = async () =>
+  Product.findAll({
+    attributes: [
+      'id',
+      'name',
+      'marathiName',
+      'quantity',
+      'price',
+      'imageUrl',
+      'defaultUnit',
+      'lower_threshold',
+      'upper_threshold',
+      'salesCount',
+      'rank'
+    ]
+  });
 
 const getProductById = async (id) => {
   const product = await Product.findByPk(id);
