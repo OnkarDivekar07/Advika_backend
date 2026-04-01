@@ -1,4 +1,5 @@
 const productService = require('./product.service');
+const { getCachedProducts, setCachedProducts } = require('@utils/productCache');
 
 exports.addProduct = async (req, res, next) => {
   try {
@@ -11,7 +12,15 @@ exports.addProduct = async (req, res, next) => {
 
 exports.getProduct = async (req, res, next) => {
   try {
+    // ── Redis cache: serve from cache if available ─────────────────
+    const cached = await getCachedProducts();
+    if (cached) {
+      return res.sendResponse({ message: 'Products fetched successfully', data: cached });
+    }
+
+    // ── Cache miss: fetch from DB and cache the result ─────────────
     const products = await productService.getAllProducts();
+    await setCachedProducts(products);
     res.sendResponse({ message: 'Products fetched successfully', data: products });
   } catch (err) {
     next(err);

@@ -21,5 +21,6 @@ module.exports = {
   bucketName: process.env.BUCKET_NAME,
   waPhoneNumberId: process.env.WA_PHONE_NUMBER_ID,
   waAccessToken: process.env.WA_ACCESS_TOKEN,
-  verifyToken: process.env.VERIFY_TOKEN,
+  verifyToken:    process.env.VERIFY_TOKEN,
+  redisUrl:       process.env.REDIS_URL || 'redis://127.0.0.1:6379',
 };
