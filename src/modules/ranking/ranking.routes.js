@@ -10,7 +10,12 @@ router.get('/', authenticate, authorizeAdmin, ctrl.getRankings);
 // GET /api/ranking/categories — split into fast / slow / non-moving buckets
 router.get('/categories', authenticate, authorizeAdmin, ctrl.getRankingsByCategory);
 
+router.get('/inventory-distribution',authenticate, authorizeAdmin, ctrl.getInventoryDistribution);
+
+
 // DELETE /api/ranking/reset — reset all salesCounts and ranks to zero (admin only)
 router.delete('/reset', authenticate, authorizeAdmin, ctrl.resetRankings);
+
+
 
 module.exports = router;

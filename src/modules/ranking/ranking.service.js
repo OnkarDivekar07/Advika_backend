@@ -223,6 +223,47 @@ const resetRankings = async () => {
   await Product.update({ salesCount: 0, rank: null }, { where: {} });
 };
 
+
+
+/**
+ * Returns inventory distribution (% of total stock value) across
+ * fast-moving, slow-moving, and non-moving categories.
+ */
+const getInventoryDistribution = async () => {
+  const all = await getRankings(); // already has category + quantity + price
+
+  const getValue = (p) => (p.quantity ?? 0) * (p.price ?? 0);
+
+  const totalValue = all.reduce((sum, p) => sum + getValue(p), 0);
+
+  const buckets = {
+    fastMoving: all.filter((p) => p.category === 'fast-moving'),
+    slowMoving: all.filter((p) => p.category === 'slow-moving'),
+    nonMoving:  all.filter((p) => p.category === 'non-moving'),
+  };
+
+  const summarize = (products) => {
+    const value = products.reduce((sum, p) => sum + getValue(p), 0);
+    return {
+      productCount:      products.length,
+      totalStockValue:   parseFloat(value.toFixed(2)),
+      percentageOfValue: totalValue > 0
+        ? parseFloat(((value / totalValue) * 100).toFixed(2))
+        : 0,
+    };
+  };
+
+  return {
+    overall: {
+      totalStockValue: parseFloat(totalValue.toFixed(2)),
+      totalProducts:   all.length,
+    },
+    fastMoving: summarize(buckets.fastMoving),
+    slowMoving: summarize(buckets.slowMoving),
+    nonMoving:  summarize(buckets.nonMoving),
+  };
+};
+
 module.exports = {
   incrementAndRerank,
   decrementAndRerank,
@@ -230,4 +271,5 @@ module.exports = {
   getRankingsByCategory,
   getReorderProductsRanked,
   resetRankings,
+  getInventoryDistribution
 };

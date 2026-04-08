@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 
 const ROUTES = {
+//  expense:       require('@modules/expense').routes,
   user:          require('@modules/user').routes,
   product:       require('@modules/product').routes,
   transaction:   require('@modules/transaction').routes,
@@ -16,6 +17,7 @@ const ROUTES = {
   supplier:      require('@modules/supplier').routes,
   webhook:       require('@modules/webhook').routes,
   ranking:       require('@modules/ranking').routes,
+  threshold:     require('@modules/threshold').routes,
 };
 
 router.use('/user',           ROUTES.user);
@@ -32,6 +34,8 @@ router.use('/purchase-orders', ROUTES.purchaseOrder);
 router.use('/suppliers',      ROUTES.supplier);
 router.use('/webhook',        ROUTES.webhook);
 router.use('/ranking',        ROUTES.ranking);
+//router.use('/expenses',       ROUTES.expense);
+router.use('/threshold',      ROUTES.threshold);
 
 router.use((req, res) => {
   res.status(404).json({ success: false, message: 'Route not found' });

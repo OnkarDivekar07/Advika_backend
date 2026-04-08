@@ -118,3 +118,70 @@
  *         upper_threshold: { type: integer, example: 100 }
  *         category:        { type: string, enum: [fast-moving, slow-moving, non-moving] }
  */
+
+
+/**
+ * @swagger
+ * /api/ranking/inventory-distribution:
+ *   get:
+ *     summary: Get stock value distribution across movement categories
+ *     description: >
+ *       Returns the percentage of total inventory **value** (quantity × price)
+ *       held in each movement category.
+ *
+ *       Useful for identifying how much capital is tied up in slow or non-moving stock.
+ *     tags: [Ranking]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Inventory value distribution by category
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: Inventory distribution fetched
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     overall:
+ *                       type: object
+ *                       properties:
+ *                         totalStockValue:
+ *                           type: number
+ *                           example: 250000.00
+ *                           description: Combined value of all products (quantity × price)
+ *                         totalProducts:
+ *                           type: integer
+ *                           example: 40
+ *                     fastMoving:
+ *                       $ref: '#/components/schemas/InventoryDistributionBucket'
+ *                     slowMoving:
+ *                       $ref: '#/components/schemas/InventoryDistributionBucket'
+ *                     nonMoving:
+ *                       $ref: '#/components/schemas/InventoryDistributionBucket'
+ *
+ * components:
+ *   schemas:
+ *     InventoryDistributionBucket:
+ *       type: object
+ *       properties:
+ *         productCount:
+ *           type: integer
+ *           example: 13
+ *           description: Number of products in this category
+ *         totalStockValue:
+ *           type: number
+ *           example: 175000.00
+ *           description: Total value of stock in this category (quantity × price)
+ *         percentageOfValue:
+ *           type: number
+ *           example: 70.00
+ *           description: Percentage of total inventory value held in this category
+ */

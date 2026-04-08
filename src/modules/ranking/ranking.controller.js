@@ -26,3 +26,14 @@ exports.resetRankings = async (req, res, next) => {
     next(err);
   }
 };
+
+
+
+exports.getInventoryDistribution = async (req, res, next) => {
+  try {
+    const data = await rankingService.getInventoryDistribution();
+    res.sendResponse({ message: 'Inventory distribution fetched', data });
+  } catch (err) {
+    next(err);
+  }
+};
