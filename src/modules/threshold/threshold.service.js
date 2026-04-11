@@ -1,342 +1,462 @@
-const { Op } = require('sequelize');
-const Product = require('@root/models/product');
-const sequelize = require('@utils/db');
-const Transaction = require('@root/models/transaction');
+'use strict';
+
+const { Op }       = require('sequelize');
+const Product      = require('@root/models/product');
+const Transaction  = require('@root/models/transaction');
+const CustomError  = require('@utils/customError');
+const { invalidateProductCache } = require('@utils/productCache');
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CONSTANTS
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const MIN_DAYS_REQUIRED    = 60;   // refuse to calculate with fewer calendar days
+const DEAD_STOCK_DAYS      = 60;   // days since last sale → forced non-moving
+const BURST_TRIM_RATIO     = 0.10; // top 10% of sale-day volumes dropped before avg
+const RECENT_WINDOW_DAYS   = 30;   // "recent" period for weighted avg
+const RECENT_WEIGHT        = 0.60; // 60% weight to recent 30 days, 40% to older
+
+/*
+ * DEFAULT_LEAD_TIME_DAYS
+ *
+ * How many days between placing a reorder and stock arriving.
+ * Used as a fallback when the Product record has no leadTimeDays field.
+ * Override per-product by adding a `leadTimeDays` column to your Product model.
+ * Even a rough estimate (5–7 days) is far better than assuming instant restock.
+ */
+const DEFAULT_LEAD_TIME_DAYS = 5;
+
+/*
+ * SAFETY_BUFFER_DAYS
+ *
+ * Extra days of demand added on top of lead time to absorb supplier delays,
+ * transit variance, and unexpected demand spikes.
+ * Formula: minThreshold covers (leadTime + safetyBuffer) days of demand.
+ */
+const SAFETY_BUFFER_DAYS = 3;
+
+/*
+ * CATEGORY_MULTIPLIERS
+ *
+ * Applied to base thresholds AFTER lead-time and weighted-avg corrections.
+ * Fast-moving uses a dynamic rank-based multiplier (not this table).
+ * Slow-moving tightened to 0.5/0.4 — your data shows over-investment here.
+ * Non-moving is handled by early return (zero thresholds), never reaches here.
+ */
+const CATEGORY_MULTIPLIERS = {
+  'slow-moving': { lower: 0.5, upper: 0.4 },
+};
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   DEMAND CALCULATION HELPERS
+   ═══════════════════════════════════════════════════════════════════════════ */
 
 /**
- * Called inside the billing transaction after stock is deducted.
- * Increments salesCount by 1 for each UNIQUE product sold (frequency, not quantity).
- * Deduplicates productIds so a product appearing twice on one bill only counts once.
- * Then recomputes ranks for ALL products in the same DB transaction.
+ * buildDailySalesMap(transactions)
  *
- * @param {string[]} productIds - IDs of products sold in this billing (may contain duplicates)
- * @param {object}   t          - Sequelize transaction object
+ * Groups transaction quantities by calendar date string.
+ * Returns a Map<dateString, totalUnits>.
+ * Used by both the trimmed mean and the recency weighting.
  */
-const incrementAndRerank = async (productIds, t) => {
-  // Deduplicate: if same product appears on multiple lines of one bill,
-  // it still only counts as ONE sale event for frequency ranking
-  const uniqueProductIds = [...new Set(productIds)];
-
-  // Step 1: Bump salesCount +1 for each unique product sold in this billing
-  await Product.increment('salesCount', {
-    by: 1,
-    where: { id: { [Op.in]: uniqueProductIds } },
-    transaction: t,
-  });
-
-  // Step 2: Fetch all products ordered by salesCount DESC to assign ranks
-  const allProducts = await Product.findAll({
-    attributes: ['id', 'salesCount'],
-    order: [['salesCount', 'DESC']],
-    transaction: t,
-    lock: t.LOCK.UPDATE,
-  });
-
-  // Step 3: Assign dense ranks.
-  // salesCount = 0 → rank null (never sold).
-  // Equal salesCount → same rank number.
-  const updates = computeRanks(allProducts);
-
-  // Step 4: Bulk update ranks
-  await Promise.all(
-    updates.map(({ id, rank }) =>
-      Product.update({ rank }, { where: { id }, transaction: t })
-    )
-  );
+const buildDailySalesMap = (transactions) => {
+  const map = new Map();
+  for (const t of transactions) {
+    const key = new Date(t.date).toDateString();
+    map.set(key, (map.get(key) || 0) + (parseInt(t.quantity, 10) || 0));
+  }
+  return map;
 };
 
 /**
- * Called inside rollbackTransaction when a sale is reversed.
- * Decrements salesCount by 1 for the product and reruns ranking.
- * salesCount floor is 0 — it will never go negative.
+ * trimmedMeanDailySales(dailyMap, trimRatio)
  *
- * @param {string} productId - product whose sale is being reversed
- * @param {object} t         - Sequelize transaction object
+ * Fix #2 — Burst Sales Protection
+ *
+ * Sorts sale-day volumes, drops the top `trimRatio` fraction (default 10%),
+ * then averages the remainder. A single 2-day burst that sold 100 units
+ * no longer inflates the average across quiet weeks.
+ *
+ * Example: 20 sale days, trim 10% → drop top 2 days, average the other 18.
+ *
+ * @param  {Map<string, number>} dailyMap
+ * @param  {number}              trimRatio  0.10 = drop top 10%
+ * @returns {{ trimmedAvg: number, keptDays: number, droppedDays: number }}
  */
-const decrementAndRerank = async (productId, t) => {
-  const product = await Product.findByPk(productId, { transaction: t });
-  if (!product) return; // guard: product may have been deleted
+const trimmedMeanDailySales = (dailyMap, trimRatio = BURST_TRIM_RATIO) => {
+  const volumes = Array.from(dailyMap.values()).sort((a, b) => a - b);
+  const dropCount = Math.floor(volumes.length * trimRatio);
+  const kept = volumes.slice(0, volumes.length - dropCount); // drop highest
 
-  // Floor at 0 — never go negative
-  const newCount = Math.max(0, product.salesCount - 1);
-  await product.update({ salesCount: newCount }, { transaction: t });
+  const trimmedAvg = kept.length > 0
+    ? kept.reduce((s, v) => s + v, 0) / kept.length
+    : 0;
 
-  // Recompute ranks across all products
-  const allProducts = await Product.findAll({
-    attributes: ['id', 'salesCount'],
-    order: [['salesCount', 'DESC']],
-    transaction: t,
-    lock: t.LOCK.UPDATE,
-  });
-
-  const updates = computeRanks(allProducts);
-
-  await Promise.all(
-    updates.map(({ id, rank }) =>
-      Product.update({ rank }, { where: { id }, transaction: t })
-    )
-  );
+  return {
+    trimmedAvg,
+    keptDays:    kept.length,
+    droppedDays: dropCount,
+  };
 };
 
 /**
- * Pure function: given a list of { id, salesCount } sorted DESC,
- * returns [{ id, rank }] with dense ranking.
- * salesCount = 0 → rank = null.
+ * recentWeightedDailySales(dailyMap, recentWindowDays, recentWeight)
+ *
+ * Fix #3 — Seasonality / Trend Approximation
+ *
+ * Splits sale days into "recent" (last N days) and "older".
+ * Computes a separate trimmed average for each bucket, then blends them:
+ *   weightedAvg = (recentAvg × recentWeight) + (olderAvg × (1 − recentWeight))
+ *
+ * Effect: if demand is rising, recent data pulls the threshold up.
+ *         if demand is falling, recent data pulls it down.
+ * No ML required — just a weighted blend of two trimmed means.
+ *
+ * Edge cases:
+ *   - No recent sales → uses older data at full weight (avoids zero threshold
+ *     for products that sold well historically but had a quiet recent month).
+ *   - No older sales  → uses recent data at full weight.
+ *
+ * @returns {{ weightedAvg, recentAvg, olderAvg, recentSaleDays, olderSaleDays }}
  */
-const computeRanks = (products) => {
-  const updates = [];
-  let currentRank = 1;
-  let prevCount = null;
-  let rankGap = 0;
+const recentWeightedDailySales = (
+  dailyMap,
+  recentWindowDays = RECENT_WINDOW_DAYS,
+  recentWeight     = RECENT_WEIGHT,
+) => {
+  const now         = new Date();
+  const cutoff      = new Date(now - recentWindowDays * 24 * 60 * 60 * 1000);
+  const recentMap   = new Map();
+  const olderMap    = new Map();
 
-  for (const product of products) {
-    if (product.salesCount === 0) {
-      updates.push({ id: product.id, rank: null });
-      continue;
-    }
-
-    if (prevCount === null) {
-      rankGap = 1;
-    } else if (product.salesCount < prevCount) {
-      currentRank += rankGap;
-      rankGap = 1;
-    } else {
-      // Same salesCount as previous → share rank
-      rankGap++;
-    }
-
-    updates.push({ id: product.id, rank: currentRank });
-    prevCount = product.salesCount;
+  for (const [dateStr, units] of dailyMap) {
+    const d = new Date(dateStr);
+    if (d >= cutoff) recentMap.set(dateStr, units);
+    else              olderMap.set(dateStr,  units);
   }
 
-  return updates;
+  const { trimmedAvg: recentAvg } = trimmedMeanDailySales(recentMap);
+  const { trimmedAvg: olderAvg  } = trimmedMeanDailySales(olderMap);
+
+  let weightedAvg;
+  if (recentMap.size === 0 && olderMap.size > 0) {
+    weightedAvg = olderAvg;                                   // no recent data
+  } else if (olderMap.size === 0 && recentMap.size > 0) {
+    weightedAvg = recentAvg;                                  // no older data
+  } else {
+    weightedAvg = (recentAvg * recentWeight) + (olderAvg * (1 - recentWeight));
+  }
+
+  return {
+    weightedAvg,
+    recentAvg:    parseFloat(recentAvg.toFixed(4)),
+    olderAvg:     parseFloat(olderAvg.toFixed(4)),
+    recentSaleDays: recentMap.size,
+    olderSaleDays:  olderMap.size,
+  };
 };
 
-/**
- * Classifies a product's rank into a movement category.
- * Needs total number of ranked products to calculate thresholds.
- */
-const classifyCategory = (rank, totalRanked) => {
-  if (!rank) return 'non-moving';
-  const fastCutoff = Math.ceil(totalRanked * 0.33);
-  const slowCutoff = Math.ceil(totalRanked * 0.66);
-  if (rank <= fastCutoff) return 'fast-moving';
-  if (rank <= slowCutoff) return 'slow-moving';
-  return 'slow-moving';
-};
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   THRESHOLD FORMULA
+   ═══════════════════════════════════════════════════════════════════════════ */
 
 /**
- * GET /api/ranking
- * Returns all products sorted by rank (fast → slow → unranked).
- * Each product includes its category label (fast-moving / slow-moving / non-moving).
+ * computeLeadTimeAwareThresholds(avgDailySales, leadTimeDays)
+ *
+ * Fix #1 — Lead Time
+ *
+ * Old formula (no lead time awareness):
+ *   min = avgDaily × 7   → "keep 1 week of stock"
+ *   max = avgDaily × 30  → "keep 1 month of stock"
+ *
+ * New formula:
+ *   min = avgDaily × (leadTime + safetyBuffer)
+ *         → "keep enough stock to survive the reorder cycle + buffer"
+ *   max = avgDaily × (leadTime + safetyBuffer + restockCycle)
+ *         → restock cycle ≈ 30 days (configurable)
+ *
+ * Example with leadTime=5, safety=3, avgDaily=10:
+ *   min = 10 × (5+3)  = 80  units  (trigger reorder when stock hits 80)
+ *   max = 10 × (5+3+30) = 380 units (order up to this level)
+ *
+ * @param {number} avgDailySales
+ * @param {number} leadTimeDays     - supplier lead time in days
+ * @returns {{ baseMin, baseMax, reorderPoint, coverageDays }}
  */
-const getRankings = async () => {
-  const products = await Product.findAll({
+const RESTOCK_CYCLE_DAYS = 30;
+
+const computeLeadTimeAwareThresholds = (avgDailySales, leadTimeDays) => {
+  const reorderPoint  = leadTimeDays + SAFETY_BUFFER_DAYS;          // days to cover
+  const coverageDays  = reorderPoint + RESTOCK_CYCLE_DAYS;          // total max coverage
+
+  const baseMin = Math.max(1, Math.ceil(avgDailySales * reorderPoint));
+  const baseMax = Math.max(1, Math.ceil(avgDailySales * coverageDays));
+
+  return { baseMin, baseMax, reorderPoint, coverageDays };
+};
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   STOCK STATUS + CATEGORY HELPERS  (unchanged from last version)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const resolveStockStatus = (currentQty, minThreshold, maxThreshold) => {
+  const qty = currentQty ?? 0;
+  if (maxThreshold > 0 && qty > maxThreshold) return 'overstock';
+  if (minThreshold > 0 && qty < minThreshold) return 'understock';
+  return 'ok';
+};
+
+// Imported from ranking.service — keep classifyCategory in one place.
+// If you can't import it, paste the identical implementation here.
+const { classifyCategory } = require('@modules/ranking/ranking.service');
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CORE CALCULATION
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * calculateThresholdsForProduct(productId)
+ *
+ * Full pipeline:
+ *   1. Dead-stock / no-sales guard            → zero thresholds, liquidate action
+ *   2. Insufficient data guard                → skip, return status
+ *   3. Recency override (Fix #2 from prev)    → stale products → non-moving
+ *   4. Weighted + trimmed avg daily sales     → Fix #2 (burst) + Fix #3 (trend)
+ *   5. Lead-time-aware base thresholds        → Fix #1
+ *   6. Category + rank multiplier             → Fix #4 (slow mover tightened)
+ *   7. Stock awareness                        → Fix #5 (prev)
+ */
+const calculateThresholdsForProduct = async (productId) => {
+  const product = await Product.findByPk(productId, {
     attributes: [
-      'id', 'name', 'marathiName', 'quantity', 'salesCount', 'rank',
-      'lower_threshold', 'upper_threshold', 'price', 'defaultUnit',
-    ],
-    order: [
-      [sequelize.literal('`rank` IS NULL'), 'ASC'], // ranked products first
-      [sequelize.literal('`rank`'), 'ASC'],                             // rank 1 first
+      'id', 'name', 'rank', 'quantity',
+      'lower_threshold', 'upper_threshold',
     ],
   });
+  if (!product) throw new CustomError(`Product not found: ${productId}`, 404);
 
-  const totalRanked = products.filter((p) => p.rank !== null).length;
+  const leadTimeDays = DEFAULT_LEAD_TIME_DAYS;
 
-  return products.map((p) => ({
-    id:              p.id,
-    name:            p.name,
-    marathiName:     p.marathiName,
-    quantity:        p.quantity,
-    price:           p.price,
-    defaultUnit:     p.defaultUnit,
-    salesCount:      p.salesCount,
-    rank:            p.rank,
-    lower_threshold: p.lower_threshold,
-    upper_threshold: p.upper_threshold,
-    category:        classifyCategory(p.rank, totalRanked),
-  }));
+  const transactions = await Transaction.findAll({
+    where: { productId, isReversed: false },
+    attributes: ['quantity', 'date'],
+    order: [['date', 'ASC']],
+  });
+
+  /* ── Guard: no sales at all ─────────────────────────────────────────── */
+  if (!transactions.length) {
+    return {
+      product_id:               productId,
+      product_name:             product.name,
+      calculated_min_threshold: 0,
+      calculated_max_threshold: 0,
+      days_since_last_sale:     null,
+      average_daily_sales:      0,
+      category:                 'non-moving',
+      status:                   'dead_stock',
+      action:                   'liquidate_or_disable',
+      stock_status:             resolveStockStatus(product.quantity, 0, 0),
+    };
+  }
+
+  /* ── Date range ─────────────────────────────────────────────────────── */
+  const now           = new Date();
+  const msPerDay      = 1000 * 60 * 60 * 24;
+  const firstDate     = new Date(transactions[0].date);
+  const lastSaleDate  = new Date(transactions[transactions.length - 1].date);
+  const daysSinceLastSale = Math.ceil((now - lastSaleDate) / msPerDay);
+  const isStale           = daysSinceLastSale > DEAD_STOCK_DAYS;
+
+  const rangeEnd   = lastSaleDate > now ? lastSaleDate : now;
+  const daysInData = Math.max(1, Math.ceil((rangeEnd - firstDate) / msPerDay));
+
+  /* ── Guard: insufficient calendar history ───────────────────────────── */
+  if (daysInData < MIN_DAYS_REQUIRED) {
+    return {
+      product_id:                productId,
+      product_name:              product.name,
+      calculated_min_threshold:  null,
+      calculated_max_threshold:  null,
+      days_used_for_calculation: daysInData,
+      days_since_last_sale:      daysSinceLastSale,
+      average_daily_sales:       0,
+      category:                  null,
+      status:                    'insufficient_data',
+      reason:                    `Only ${daysInData} day(s) of data. Minimum: ${MIN_DAYS_REQUIRED}.`,
+      stock_status:              resolveStockStatus(
+                                   product.quantity,
+                                   product.lower_threshold,
+                                   product.upper_threshold,
+                                 ),
+    };
+  }
+
+  /* ── Category resolution ────────────────────────────────────────────── */
+  const totalRanked = await Product.count({ where: { rank: { [Op.not]: null } } });
+  const category    = isStale ? 'non-moving' : classifyCategory(product.rank, totalRanked);
+
+  /* ── Guard: dead / non-moving → zero thresholds ─────────────────────── */
+  if (category === 'non-moving') {
+    return {
+      product_id:                productId,
+      product_name:              product.name,
+      calculated_min_threshold:  0,
+      calculated_max_threshold:  0,
+      days_used_for_calculation: daysInData,
+      days_since_last_sale:      daysSinceLastSale,
+      average_daily_sales:       0,
+      category:                  'non-moving',
+      status:                    'dead_stock',
+      action:                    'liquidate_or_disable',
+      forced_by_recency:         isStale,
+      stock_status:              resolveStockStatus(product.quantity, 0, 0),
+    };
+  }
+
+  /* ── Fix #2 + #3: Burst-trimmed, recency-weighted demand ────────────── */
+  const dailyMap = buildDailySalesMap(transactions);
+  const {
+    weightedAvg,
+    recentAvg,
+    olderAvg,
+    recentSaleDays,
+    olderSaleDays,
+  } = recentWeightedDailySales(dailyMap);
+
+  const { keptDays, droppedDays } = trimmedMeanDailySales(dailyMap);
+  const avgDailySales = weightedAvg; // final demand signal
+
+  /* ── Fix #1: Lead-time-aware base thresholds ────────────────────────── */
+  const { baseMin, baseMax, reorderPoint, coverageDays } =
+    computeLeadTimeAwareThresholds(avgDailySales, leadTimeDays);
+
+  /* ── Fix #4: Category multiplier ────────────────────────────────────── */
+  let multiplier;
+  if (category === 'fast-moving') {
+    // Dynamic: rank #1 → full buffer (1.5/1.3), last fast-mover → no extra (1.0/1.0)
+    const rankFactor = 1 - (product.rank / totalRanked);
+    multiplier = {
+      lower: parseFloat((1 + rankFactor * 0.5).toFixed(3)),
+      upper: parseFloat((1 + rankFactor * 0.3).toFixed(3)),
+    };
+  } else {
+    // Slow-moving: tightened to 0.5/0.4 (was 0.7/0.6)
+    multiplier = CATEGORY_MULTIPLIERS['slow-moving'];
+  }
+
+  const minThreshold = Math.max(1, Math.ceil(baseMin * multiplier.lower));
+  const maxThreshold = Math.max(1, Math.ceil(baseMax * multiplier.upper));
+
+  /* ── Fix #5: Stock status ───────────────────────────────────────────── */
+  const stockStatus = resolveStockStatus(product.quantity, minThreshold, maxThreshold);
+
+  return {
+    product_id:                productId,
+    product_name:              product.name,
+    calculated_min_threshold:  minThreshold,
+    calculated_max_threshold:  maxThreshold,
+
+    // Demand signal breakdown (audit trail)
+    average_daily_sales:       parseFloat(avgDailySales.toFixed(4)),
+    recent_avg_daily_sales:    recentAvg,
+    older_avg_daily_sales:     olderAvg,
+    recent_sale_days:          recentSaleDays,
+    older_sale_days:           olderSaleDays,
+    burst_days_dropped:        droppedDays,
+    burst_days_kept:           keptDays,
+
+    // Lead time breakdown (audit trail)
+    lead_time_days:            leadTimeDays,
+    reorder_point_days:        reorderPoint,   // leadTime + safetyBuffer
+    coverage_days:             coverageDays,   // reorderPoint + restockCycle
+    base_min_threshold:        baseMin,
+    base_max_threshold:        baseMax,
+
+    // Classification + multiplier
+    category,
+    applied_multiplier:        multiplier,
+    forced_by_recency:         isStale,
+    days_since_last_sale:      daysSinceLastSale,
+    days_used_for_calculation: daysInData,
+
+    status:                    'calculated',
+    stock_status:              stockStatus,
+  };
 };
 
-/**
- * GET /api/ranking/categories
- * Splits ranked products into fast / slow / non-moving buckets.
- * Top 33% → fast-moving, next 33% → slow-moving, bottom 34% + never-sold → non-moving/slow.
- */
-const getRankingsByCategory = async () => {
-  const all = await getRankings(); // already has category labels
 
-  const fastMoving  = all.filter((p) => p.category === 'fast-moving');
-  const slowMoving  = all.filter((p) => p.category === 'slow-moving');
-  const nonMoving   = all.filter((p) => p.category === 'non-moving');
+/* ═══════════════════════════════════════════════════════════════════════════
+   SAVE HELPER  (unchanged)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const saveThresholds = async (productId, minThreshold, maxThreshold) => {
+  await Product.update(
+    { lower_threshold: minThreshold, upper_threshold: maxThreshold },
+    { where: { id: productId } },
+  );
+};
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PUBLIC API  (unchanged signatures — drop-in replacement)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const recalculateForOne = async (productId) => {
+  const result = await calculateThresholdsForProduct(productId);
+  if (result.status === 'calculated') {
+    await saveThresholds(productId, result.calculated_min_threshold, result.calculated_max_threshold);
+    await invalidateProductCache();
+  }
+  return result;
+};
+
+const recalculateForAll = async () => {
+  const products = await Product.findAll({ attributes: ['id'] });
+
+  const results  = [];
+  let   updated  = 0;
+  let   skipped  = 0;
+  let   deadStock = 0;
+
+  for (const { id } of products) {
+    const result = await calculateThresholdsForProduct(id);
+    results.push(result);
+
+    if (result.status === 'calculated') {
+      await saveThresholds(id, result.calculated_min_threshold, result.calculated_max_threshold);
+      updated++;
+    } else if (result.status === 'dead_stock') {
+      // Still save the zero thresholds so reorder service skips them cleanly
+      await saveThresholds(id, 0, 0);
+      deadStock++;
+    } else {
+      skipped++;
+    }
+  }
+
+  if (updated + deadStock > 0) await invalidateProductCache();
 
   return {
     summary: {
-      total:      all.length,
-      fastMoving: fastMoving.length,
-      slowMoving: slowMoving.length,
-      nonMoving:  nonMoving.length,
+      total:     products.length,
+      updated,
+      dead_stock: deadStock,
+      skipped,
     },
-    fastMoving,
-    slowMoving,
-    nonMoving,
+    results,
   };
 };
 
-/**
- * Used by the email service.
- * Returns products that need reorder, sorted rank 1 first (fast-movers at top).
- */
-const getReorderProductsRanked = async () => {
-  const products = await Product.findAll({
-    attributes: [
-      'id', 'name', 'marathiName', 'quantity', 'salesCount', 'rank',
-      'lower_threshold', 'upper_threshold',
-    ],
-    order: [
-      [sequelize.literal('`rank` IS NULL'), 'ASC'],
-      [sequelize.literal('`rank`'), 'ASC'],
-    ],
-  });
-
-  const totalRanked = products.filter((p) => p.rank !== null).length;
-
-  return products
-    .filter((p) => p.quantity <= (p.lower_threshold ?? 5))
-    .map((p) => {
-      const orderQty = (p.upper_threshold ?? 100) - p.quantity;
-      if (orderQty <= 0) return null;
-      return {
-        ...p.toJSON(),
-        order_quantity: orderQty,
-        category: classifyCategory(p.rank, totalRanked),
-      };
-    })
-    .filter(Boolean);
-};
-
-/**
- * Admin utility: reset all ranks and salesCounts.
- * Useful for a seasonal reset or starting fresh.
- */
-const resetRankings = async () => {
-  await Product.update({ salesCount: 0, rank: null }, { where: {} });
-};
-
-
-
-/**
- * Returns inventory distribution (% of total stock value) across
- * fast-moving, slow-moving, and non-moving categories.
- */
-// const getInventoryDistribution = async () => {
-//   const all = await getRankings(); // already has category + quantity + price
-
-//   const getValue = (p) => (p.quantity ?? 0) * (p.price ?? 0);
-
-//   const totalValue = all.reduce((sum, p) => sum + getValue(p), 0);
-
-//   const buckets = {
-//     fastMoving: all.filter((p) => p.category === 'fast-moving'),
-//     slowMoving: all.filter((p) => p.category === 'slow-moving'),
-//     nonMoving:  all.filter((p) => p.category === 'non-moving'),
-//   };
-
-//   const summarize = (products) => {
-//     const value = products.reduce((sum, p) => sum + getValue(p), 0);
-//     return {
-//       productCount:      products.length,
-//       totalStockValue:   parseFloat(value.toFixed(2)),
-//       percentageOfValue: totalValue > 0
-//         ? parseFloat(((value / totalValue) * 100).toFixed(2))
-//         : 0,
-//     };
-//   };
-
-//   return {
-//     overall: {
-//       totalStockValue: parseFloat(totalValue.toFixed(2)),
-//       totalProducts:   all.length,
-//     },
-//     fastMoving: summarize(buckets.fastMoving),
-//     slowMoving: summarize(buckets.slowMoving),
-//     nonMoving:  summarize(buckets.nonMoving),
-//   };
-// };
-
-const getInventoryDistribution = async () => {
-  const all = await getRankings();
-
-  const getStockValue = (p) => (p.quantity ?? 0) * (p.price ?? 0);
-
-  const totalStockValue = all.reduce((sum, p) => sum + getStockValue(p), 0);
-
-  // Pull real sales revenue from Transaction table
-  const salesByProduct = await Transaction.findAll({
-    attributes: [
-      'productId',
-      [sequelize.fn('SUM', sequelize.col('totalAmount')), 'totalSales'],
-    ],
-    where: { isReversed: false },
-    group: ['productId'],
-    raw: true,
-  });
-
-  // Map productId → actual revenue
-  const salesMap = {};
-  for (const row of salesByProduct) {
-    salesMap[row.productId] = parseFloat(row.totalSales ?? 0);
-  }
-
-  // Attach real sales value to each product
-  const allWithSales = all.map((p) => ({
-    ...p,
-    actualSalesValue: salesMap[p.id] ?? 0,
-  }));
-
-  const totalSalesValue = allWithSales.reduce((sum, p) => sum + p.actualSalesValue, 0);
-
-  const buckets = {
-    fastMoving: allWithSales.filter((p) => p.category === 'fast-moving'),
-    slowMoving: allWithSales.filter((p) => p.category === 'slow-moving'),
-    nonMoving:  allWithSales.filter((p) => p.category === 'non-moving'),
-  };
-
-  const summarize = (products) => {
-    const stockValue = products.reduce((sum, p) => sum + getStockValue(p), 0);
-    const salesValue = products.reduce((sum, p) => sum + p.actualSalesValue, 0);
-    return {
-      productCount:           products.length,
-      totalStockValue:        parseFloat(stockValue.toFixed(2)),
-      percentageOfStockValue: totalStockValue > 0
-        ? parseFloat(((stockValue / totalStockValue) * 100).toFixed(2))
-        : 0,
-      totalSalesValue:        parseFloat(salesValue.toFixed(2)),
-      percentageOfSalesValue: totalSalesValue > 0
-        ? parseFloat(((salesValue / totalSalesValue) * 100).toFixed(2))
-        : 0,
-    };
-  };
-
-  return {
-    overall: {
-      totalStockValue:  parseFloat(totalStockValue.toFixed(2)),
-      totalSalesValue:  parseFloat(totalSalesValue.toFixed(2)),
-      totalProducts:    all.length,
-    },
-    fastMoving: summarize(buckets.fastMoving),
-    slowMoving: summarize(buckets.slowMoving),
-    nonMoving:  summarize(buckets.nonMoving),
-  };
-};
 module.exports = {
-  incrementAndRerank,
-  decrementAndRerank,
-  getRankings,
-  getRankingsByCategory,
-  getReorderProductsRanked,
-  resetRankings,
-  getInventoryDistribution,
-  classifyCategory,
+  recalculateForOne,
+  recalculateForAll,
+  resolveStockStatus,
+  // exported for unit testing individual stages
+  buildDailySalesMap,
+  trimmedMeanDailySales,
+  recentWeightedDailySales,
+  computeLeadTimeAwareThresholds,
 };
