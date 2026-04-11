@@ -229,12 +229,49 @@ const resetRankings = async () => {
  * Returns inventory distribution (% of total stock value) across
  * fast-moving, slow-moving, and non-moving categories.
  */
+// const getInventoryDistribution = async () => {
+//   const all = await getRankings(); // already has category + quantity + price
+
+//   const getValue = (p) => (p.quantity ?? 0) * (p.price ?? 0);
+
+//   const totalValue = all.reduce((sum, p) => sum + getValue(p), 0);
+
+//   const buckets = {
+//     fastMoving: all.filter((p) => p.category === 'fast-moving'),
+//     slowMoving: all.filter((p) => p.category === 'slow-moving'),
+//     nonMoving:  all.filter((p) => p.category === 'non-moving'),
+//   };
+
+//   const summarize = (products) => {
+//     const value = products.reduce((sum, p) => sum + getValue(p), 0);
+//     return {
+//       productCount:      products.length,
+//       totalStockValue:   parseFloat(value.toFixed(2)),
+//       percentageOfValue: totalValue > 0
+//         ? parseFloat(((value / totalValue) * 100).toFixed(2))
+//         : 0,
+//     };
+//   };
+
+//   return {
+//     overall: {
+//       totalStockValue: parseFloat(totalValue.toFixed(2)),
+//       totalProducts:   all.length,
+//     },
+//     fastMoving: summarize(buckets.fastMoving),
+//     slowMoving: summarize(buckets.slowMoving),
+//     nonMoving:  summarize(buckets.nonMoving),
+//   };
+// };
+
 const getInventoryDistribution = async () => {
-  const all = await getRankings(); // already has category + quantity + price
+  const all = await getRankings();
 
-  const getValue = (p) => (p.quantity ?? 0) * (p.price ?? 0);
+  const getStockValue = (p) => (p.quantity ?? 0) * (p.price ?? 0);
+  const getSalesValue = (p) => (p.salesCount ?? 0) * (p.price ?? 0);
 
-  const totalValue = all.reduce((sum, p) => sum + getValue(p), 0);
+  const totalStockValue = all.reduce((sum, p) => sum + getStockValue(p), 0);
+  const totalSalesValue = all.reduce((sum, p) => sum + getSalesValue(p), 0);
 
   const buckets = {
     fastMoving: all.filter((p) => p.category === 'fast-moving'),
@@ -243,20 +280,26 @@ const getInventoryDistribution = async () => {
   };
 
   const summarize = (products) => {
-    const value = products.reduce((sum, p) => sum + getValue(p), 0);
+    const stockValue = products.reduce((sum, p) => sum + getStockValue(p), 0);
+    const salesValue = products.reduce((sum, p) => sum + getSalesValue(p), 0);
     return {
-      productCount:      products.length,
-      totalStockValue:   parseFloat(value.toFixed(2)),
-      percentageOfValue: totalValue > 0
-        ? parseFloat(((value / totalValue) * 100).toFixed(2))
+      productCount:            products.length,
+      totalStockValue:         parseFloat(stockValue.toFixed(2)),
+      percentageOfStockValue:  totalStockValue > 0
+        ? parseFloat(((stockValue / totalStockValue) * 100).toFixed(2))
+        : 0,
+      totalSalesValue:         parseFloat(salesValue.toFixed(2)),
+      percentageOfSalesValue:  totalSalesValue > 0
+        ? parseFloat(((salesValue / totalSalesValue) * 100).toFixed(2))
         : 0,
     };
   };
 
   return {
     overall: {
-      totalStockValue: parseFloat(totalValue.toFixed(2)),
-      totalProducts:   all.length,
+      totalStockValue:  parseFloat(totalStockValue.toFixed(2)),
+      totalSalesValue:  parseFloat(totalSalesValue.toFixed(2)),
+      totalProducts:    all.length,
     },
     fastMoving: summarize(buckets.fastMoving),
     slowMoving: summarize(buckets.slowMoving),
