@@ -1,6 +1,7 @@
 const { Op } = require('sequelize');
 const Product = require('@root/models/product');
 const sequelize = require('@utils/db');
+const Transaction = require('@root/models/transaction');
 
 /**
  * Called inside the billing transaction after stock is deducted.
@@ -268,28 +269,51 @@ const getInventoryDistribution = async () => {
   const all = await getRankings();
 
   const getStockValue = (p) => (p.quantity ?? 0) * (p.price ?? 0);
-  const getSalesValue = (p) => (p.salesCount ?? 0) * (p.price ?? 0);
 
   const totalStockValue = all.reduce((sum, p) => sum + getStockValue(p), 0);
-  const totalSalesValue = all.reduce((sum, p) => sum + getSalesValue(p), 0);
+
+  // Pull real sales revenue from Transaction table
+  const salesByProduct = await Transaction.findAll({
+    attributes: [
+      'productId',
+      [sequelize.fn('SUM', sequelize.col('totalAmount')), 'totalSales'],
+    ],
+    where: { isReversed: false },
+    group: ['productId'],
+    raw: true,
+  });
+
+  // Map productId → actual revenue
+  const salesMap = {};
+  for (const row of salesByProduct) {
+    salesMap[row.productId] = parseFloat(row.totalSales ?? 0);
+  }
+
+  // Attach real sales value to each product
+  const allWithSales = all.map((p) => ({
+    ...p,
+    actualSalesValue: salesMap[p.id] ?? 0,
+  }));
+
+  const totalSalesValue = allWithSales.reduce((sum, p) => sum + p.actualSalesValue, 0);
 
   const buckets = {
-    fastMoving: all.filter((p) => p.category === 'fast-moving'),
-    slowMoving: all.filter((p) => p.category === 'slow-moving'),
-    nonMoving:  all.filter((p) => p.category === 'non-moving'),
+    fastMoving: allWithSales.filter((p) => p.category === 'fast-moving'),
+    slowMoving: allWithSales.filter((p) => p.category === 'slow-moving'),
+    nonMoving:  allWithSales.filter((p) => p.category === 'non-moving'),
   };
 
   const summarize = (products) => {
     const stockValue = products.reduce((sum, p) => sum + getStockValue(p), 0);
-    const salesValue = products.reduce((sum, p) => sum + getSalesValue(p), 0);
+    const salesValue = products.reduce((sum, p) => sum + p.actualSalesValue, 0);
     return {
-      productCount:            products.length,
-      totalStockValue:         parseFloat(stockValue.toFixed(2)),
-      percentageOfStockValue:  totalStockValue > 0
+      productCount:           products.length,
+      totalStockValue:        parseFloat(stockValue.toFixed(2)),
+      percentageOfStockValue: totalStockValue > 0
         ? parseFloat(((stockValue / totalStockValue) * 100).toFixed(2))
         : 0,
-      totalSalesValue:         parseFloat(salesValue.toFixed(2)),
-      percentageOfSalesValue:  totalSalesValue > 0
+      totalSalesValue:        parseFloat(salesValue.toFixed(2)),
+      percentageOfSalesValue: totalSalesValue > 0
         ? parseFloat(((salesValue / totalSalesValue) * 100).toFixed(2))
         : 0,
     };
@@ -306,7 +330,6 @@ const getInventoryDistribution = async () => {
     nonMoving:  summarize(buckets.nonMoving),
   };
 };
-
 module.exports = {
   incrementAndRerank,
   decrementAndRerank,
