@@ -210,7 +210,7 @@ const resolveStockStatus = (currentQty, minThreshold, maxThreshold) => {
 
 // Imported from ranking.service — keep classifyCategory in one place.
 // If you can't import it, paste the identical implementation here.
-const { classifyCategory } = require('@services/ranking.service');
+const { classifyCategory } = require('@modules/ranking/ranking.service');
 
 
 /* ═══════════════════════════════════════════════════════════════════════════
