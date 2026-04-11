@@ -334,6 +334,7 @@ module.exports = {
   incrementAndRerank,
   decrementAndRerank,
   getRankings,
+  classifyCategory,
   getRankingsByCategory,
   getReorderProductsRanked,
   resetRankings,
