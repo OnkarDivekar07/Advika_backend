@@ -1,63 +1,123 @@
 'use strict';
 
-const { Op }       = require('sequelize');
-const Product      = require('@root/models/product');
-const Transaction  = require('@root/models/transaction');
-const CustomError  = require('@utils/customError');
-const { invalidateProductCache } = require('@utils/productCache');
+/**
+ * threshold.service.js  —  One Order Per Month Model
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * THE MENTAL MODEL
+ * ─────────────────────────────────────────────────────────────────────────
+ * You place ONE order per month.
+ * That order should stock you up for the ENTIRE month + a safety buffer.
+ * You never need to order mid-month if you follow the numbers.
+ *
+ * HOW IT WORKS
+ * ─────────────────────────────────────────────────────────────────────────
+ *
+ *   ORDER QUANTITY (what to order this month):
+ *     = max_threshold − current_stock_on_hand
+ *     Order this much and you're covered for the full month.
+ *
+ *   MAX THRESHOLD (stock up to this level each month):
+ *     = avgDailySales × (30 days + safety buffer days)
+ *     This covers full month demand + safety cushion.
+ *
+ *   MIN THRESHOLD (danger alert — stock should NEVER drop below this):
+ *     = avgDailySales × safety buffer days
+ *     If you hit this before month-end → you under-ordered last month.
+ *     This is your early warning, not your reorder point.
+ *
+ * SAFETY BUFFER BY CATEGORY
+ * ─────────────────────────────────────────────────────────────────────────
+ *   Fast-moving: 7 days  → never run out, higher stakes
+ *   Slow-moving: 4 days  → less cash locked up
+ *   Non-moving:  0       → eliminate from stock entirely
+ *
+ * WORKED EXAMPLE — fast mover, sells 10 units/day
+ * ─────────────────────────────────────────────────────────────────────────
+ *   Monthly demand  = 10 × 30 = 300 units
+ *   Safety buffer   = 10 ×  7 =  70 units
+ *   Max threshold   = 370 units  ← stock up to here when you order
+ *   Min threshold   =  70 units  ← alert if qty drops below this
+ *   Order quantity  = 370 − current_stock  (e.g. 370 − 50 = 320 units)
+ *
+ * WORKED EXAMPLE — slow mover, sells 2 units/day
+ * ─────────────────────────────────────────────────────────────────────────
+ *   Monthly demand  =  2 × 30 = 60 units
+ *   Safety buffer   =  2 ×  4 =  8 units
+ *   Max threshold   = 68 units
+ *   Min threshold   =  8 units
+ *   Order quantity  = 68 − current_stock
+ */
+
+const { Op }      = require('sequelize');
+const Product     = require('@root/models/product');
+const Transaction = require('@root/models/transaction');
+const CustomError = require('@utils/customError');
+const { invalidateProductCache }  = require('@utils/productCache');
+const { sendMinThresholdAlert }   = require('./threshold.alert');
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   CONSTANTS
+   CONFIGURATION
+   To tune the system: only touch values in this block.
    ═══════════════════════════════════════════════════════════════════════════ */
 
-const MIN_DAYS_REQUIRED    = 60;   // refuse to calculate with fewer calendar days
-const DEAD_STOCK_DAYS      = 60;   // days since last sale → forced non-moving
-const BURST_TRIM_RATIO     = 0.10; // top 10% of sale-day volumes dropped before avg
-const RECENT_WINDOW_DAYS   = 30;   // "recent" period for weighted avg
-const RECENT_WEIGHT        = 0.60; // 60% weight to recent 30 days, 40% to older
+const CONFIG = {
+  // One order covers this many days of demand
+  ORDER_CYCLE_DAYS: 40,
 
-/*
- * DEFAULT_LEAD_TIME_DAYS
- *
- * How many days between placing a reorder and stock arriving.
- * Used as a fallback when the Product record has no leadTimeDays field.
- * Override per-product by adding a `leadTimeDays` column to your Product model.
- * Even a rough estimate (5–7 days) is far better than assuming instant restock.
- */
-const DEFAULT_LEAD_TIME_DAYS = 5;
+  // Safety buffer by category (extra days of stock on top of monthly demand)
+  // Fast movers get more buffer — stockout cost is higher
+  // Slow movers get less buffer — less cash tied up
+  SAFETY_DAYS: {
+    'fast-moving': 15,
+    'slow-moving': 7,
+  },
 
-/*
- * SAFETY_BUFFER_DAYS
- *
- * Extra days of demand added on top of lead time to absorb supplier delays,
- * transit variance, and unexpected demand spikes.
- * Formula: minThreshold covers (leadTime + safetyBuffer) days of demand.
- */
-const SAFETY_BUFFER_DAYS = 3;
+  // Minimum days of history needed before we trust the average daily sales
+  MIN_DAYS_REQUIRED: 60,
 
-/*
- * CATEGORY_MULTIPLIERS
- *
- * Applied to base thresholds AFTER lead-time and weighted-avg corrections.
- * Fast-moving uses a dynamic rank-based multiplier (not this table).
- * Slow-moving tightened to 0.5/0.4 — your data shows over-investment here.
- * Non-moving is handled by early return (zero thresholds), never reaches here.
- */
-const CATEGORY_MULTIPLIERS = {
-  'slow-moving': { lower: 0.5, upper: 0.4 },
+  // Product not sold in this many days → forced non-moving
+  DEAD_STOCK_DAYS: 60,
+
+  // Days from placing the order to stock arriving at your shop.
+  // Stock consumed during this window must already be on the shelf.
+  LEAD_TIME_DAYS: 15,
+
+  // Classification cutoffs (by sales rank percentile)
+  FAST_CUTOFF: 0.33,   // top 33% → fast-moving
+  SLOW_CUTOFF: 0.66,   // next 33% → slow-moving, bottom 34% → non-moving
 };
 
-
 /* ═══════════════════════════════════════════════════════════════════════════
-   DEMAND CALCULATION HELPERS
+   STEP 1 — CLASSIFY
    ═══════════════════════════════════════════════════════════════════════════ */
 
 /**
- * buildDailySalesMap(transactions)
+ * Classify a product's movement category by its sales rank.
  *
- * Groups transaction quantities by calendar date string.
- * Returns a Map<dateString, totalUnits>.
- * Used by both the trimmed mean and the recency weighting.
+ * rank = null  → never sold → non-moving
+ * rank ≤ 33%   → fast-moving
+ * rank ≤ 66%   → slow-moving
+ * rank > 66%   → non-moving (bottom 34% — eliminate)
+ */
+const classifyCategory = (rank, totalRanked) => {
+  if (!rank || totalRanked === 0) return 'non-moving';
+
+  const fastCutoff = Math.ceil(totalRanked * CONFIG.FAST_CUTOFF);
+  const slowCutoff = Math.ceil(totalRanked * CONFIG.SLOW_CUTOFF);
+
+  if (rank <= fastCutoff) return 'fast-moving';
+  if (rank <= slowCutoff) return 'slow-moving';
+  return 'non-moving';
+};
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   STEP 2 — AVERAGE DAILY SALES
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Group transaction quantities by calendar date.
+ * Returns Map<dateString → totalUnitsOnThatDay>.
  */
 const buildDailySalesMap = (transactions) => {
   const map = new Map();
@@ -69,357 +129,286 @@ const buildDailySalesMap = (transactions) => {
 };
 
 /**
- * trimmedMeanDailySales(dailyMap, trimRatio)
+ * True average daily sales over the FULL calendar period.
  *
- * Fix #2 — Burst Sales Protection
+ * WHY THE OLD APPROACH WAS WRONG:
+ *   The previous version divided total units by "sale days only" (dailyMap.size).
+ *   That ignores every day the shop was open but the product didn't sell.
  *
- * Sorts sale-day volumes, drops the top `trimRatio` fraction (default 10%),
- * then averages the remainder. A single 2-day burst that sold 100 units
- * no longer inflates the average across quiet weeks.
+ *   Example: 100 units sold over 10 sale-days, but 60 real calendar days.
+ *     Old (wrong):  100 / 10 = 10 units/day  → massive overstock
+ *     New (correct): 100 / 60 = 1.67 units/day → accurate order
  *
- * Example: 20 sale days, trim 10% → drop top 2 days, average the other 18.
+ * WHY daysInData (not dailyMap.size):
+ *   daysInData = calendar days from first sale to today.
+ *   This is the true denominator — it includes the quiet days.
+ *   Every zero-sales day is automatically counted because we divide
+ *   by the full period, not by the number of days with activity.
  *
- * @param  {Map<string, number>} dailyMap
- * @param  {number}              trimRatio  0.10 = drop top 10%
- * @returns {{ trimmedAvg: number, keptDays: number, droppedDays: number }}
+ * @param {Array}  transactions - raw transaction rows (quantity, date)
+ * @param {number} daysInData   - calendar days from first sale to today
+ * @returns {number} avgDailySales
  */
-const trimmedMeanDailySales = (dailyMap, trimRatio = BURST_TRIM_RATIO) => {
-  const volumes = Array.from(dailyMap.values()).sort((a, b) => a - b);
-  const dropCount = Math.floor(volumes.length * trimRatio);
-  const kept = volumes.slice(0, volumes.length - dropCount); // drop highest
+const calcAvgDailySales = (transactions, daysInData) => {
+  if (!transactions.length || daysInData <= 0) return 0;
 
-  const trimmedAvg = kept.length > 0
-    ? kept.reduce((s, v) => s + v, 0) / kept.length
-    : 0;
+  const totalUnits = transactions.reduce(
+    (sum, t) => sum + (Number(t.quantity) || 0),
+    0,
+  );
 
-  return {
-    trimmedAvg,
-    keptDays:    kept.length,
-    droppedDays: dropCount,
-  };
+  return totalUnits / daysInData;
 };
-
-/**
- * recentWeightedDailySales(dailyMap, recentWindowDays, recentWeight)
- *
- * Fix #3 — Seasonality / Trend Approximation
- *
- * Splits sale days into "recent" (last N days) and "older".
- * Computes a separate trimmed average for each bucket, then blends them:
- *   weightedAvg = (recentAvg × recentWeight) + (olderAvg × (1 − recentWeight))
- *
- * Effect: if demand is rising, recent data pulls the threshold up.
- *         if demand is falling, recent data pulls it down.
- * No ML required — just a weighted blend of two trimmed means.
- *
- * Edge cases:
- *   - No recent sales → uses older data at full weight (avoids zero threshold
- *     for products that sold well historically but had a quiet recent month).
- *   - No older sales  → uses recent data at full weight.
- *
- * @returns {{ weightedAvg, recentAvg, olderAvg, recentSaleDays, olderSaleDays }}
- */
-const recentWeightedDailySales = (
-  dailyMap,
-  recentWindowDays = RECENT_WINDOW_DAYS,
-  recentWeight     = RECENT_WEIGHT,
-) => {
-  const now         = new Date();
-  const cutoff      = new Date(now - recentWindowDays * 24 * 60 * 60 * 1000);
-  const recentMap   = new Map();
-  const olderMap    = new Map();
-
-  for (const [dateStr, units] of dailyMap) {
-    const d = new Date(dateStr);
-    if (d >= cutoff) recentMap.set(dateStr, units);
-    else              olderMap.set(dateStr,  units);
-  }
-
-  const { trimmedAvg: recentAvg } = trimmedMeanDailySales(recentMap);
-  const { trimmedAvg: olderAvg  } = trimmedMeanDailySales(olderMap);
-
-  let weightedAvg;
-  if (recentMap.size === 0 && olderMap.size > 0) {
-    weightedAvg = olderAvg;                                   // no recent data
-  } else if (olderMap.size === 0 && recentMap.size > 0) {
-    weightedAvg = recentAvg;                                  // no older data
-  } else {
-    weightedAvg = (recentAvg * recentWeight) + (olderAvg * (1 - recentWeight));
-  }
-
-  return {
-    weightedAvg,
-    recentAvg:    parseFloat(recentAvg.toFixed(4)),
-    olderAvg:     parseFloat(olderAvg.toFixed(4)),
-    recentSaleDays: recentMap.size,
-    olderSaleDays:  olderMap.size,
-  };
-};
-
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   THRESHOLD FORMULA
+   STEP 3 — MONTHLY ORDER THRESHOLDS
    ═══════════════════════════════════════════════════════════════════════════ */
 
 /**
- * computeLeadTimeAwareThresholds(avgDailySales, leadTimeDays)
+ * Compute the min/max stock thresholds for a one-order-per-month model.
  *
- * Fix #1 — Lead Time
+ * max_threshold  = avgDaily × (ORDER_CYCLE_DAYS + safetyDays + LEAD_TIME_DAYS)
+ *   → Stock up to this level when you place your monthly order.
+ *   → Covers full month demand + lead time consumption + safety cushion.
  *
- * Old formula (no lead time awareness):
- *   min = avgDaily × 7   → "keep 1 week of stock"
- *   max = avgDaily × 30  → "keep 1 month of stock"
+ * min_threshold  = avgDaily × safetyDays
+ *   → Never let stock fall below this.
+ *   → If it does before month-end, you under-ordered last month.
  *
- * New formula:
- *   min = avgDaily × (leadTime + safetyBuffer)
- *         → "keep enough stock to survive the reorder cycle + buffer"
- *   max = avgDaily × (leadTime + safetyBuffer + restockCycle)
- *         → restock cycle ≈ 30 days (configurable)
- *
- * Example with leadTime=5, safety=3, avgDaily=10:
- *   min = 10 × (5+3)  = 80  units  (trigger reorder when stock hits 80)
- *   max = 10 × (5+3+30) = 380 units (order up to this level)
+ * order_quantity = max_threshold − current_stock
+ *   → Order exactly this much. No more, no less.
  *
  * @param {number} avgDailySales
- * @param {number} leadTimeDays     - supplier lead time in days
- * @returns {{ baseMin, baseMax, reorderPoint, coverageDays }}
+ * @param {'fast-moving'|'slow-moving'} category
+ * @param {number} currentStock - product's current qty on hand
+ * @returns {{ minThreshold, maxThreshold, orderQty, monthlyDemand, safetyBuffer, safetyDays, leadTimeDays }}
  */
-const RESTOCK_CYCLE_DAYS = 30;
+const calcMonthlyOrderThresholds = (avgDailySales, category, currentStock) => {
+  const safetyDays    = CONFIG.SAFETY_DAYS[category];
+  const leadTimeDays  = CONFIG.LEAD_TIME_DAYS;
+  const monthlyDemand = Math.ceil(avgDailySales * CONFIG.ORDER_CYCLE_DAYS);
+  const safetyBuffer  = Math.ceil(avgDailySales * safetyDays);
+  const leadBuffer    = Math.ceil(avgDailySales * leadTimeDays);
 
-const computeLeadTimeAwareThresholds = (avgDailySales, leadTimeDays) => {
-  const reorderPoint  = leadTimeDays + SAFETY_BUFFER_DAYS;          // days to cover
-  const coverageDays  = reorderPoint + RESTOCK_CYCLE_DAYS;          // total max coverage
+  const maxThreshold = monthlyDemand + safetyBuffer + leadBuffer;   // stock UP TO here
+  const minThreshold = safetyBuffer + leadBuffer;                   // never DROP below here — covers safety + lead time
 
-  const baseMin = Math.max(1, Math.ceil(avgDailySales * reorderPoint));
-  const baseMax = Math.max(1, Math.ceil(avgDailySales * coverageDays));
+  // How much to order this month — floor at 0 (don't order if overstocked)
+  const orderQty = Math.max(0, maxThreshold - (currentStock ?? 0));
 
-  return { baseMin, baseMax, reorderPoint, coverageDays };
+  return {
+    minThreshold:  Math.max(1, minThreshold),
+    maxThreshold:  Math.max(1, maxThreshold),
+    orderQty,
+    monthlyDemand,
+    safetyBuffer,
+    safetyDays,
+    leadTimeDays,
+    leadBuffer,
+  };
 };
 
-
 /* ═══════════════════════════════════════════════════════════════════════════
-   STOCK STATUS + CATEGORY HELPERS  (unchanged from last version)
+   STEP 4 — STOCK STATUS
    ═══════════════════════════════════════════════════════════════════════════ */
 
-const resolveStockStatus = (currentQty, minThreshold, maxThreshold) => {
+const resolveStockStatus = (currentQty, min, max) => {
   const qty = currentQty ?? 0;
-  if (maxThreshold > 0 && qty > maxThreshold) return 'overstock';
-  if (minThreshold > 0 && qty < minThreshold) return 'understock';
+  if (max > 0 && qty > max) return 'overstock';
+  if (min > 0 && qty < min) return 'understock';
   return 'ok';
 };
 
-// Imported from ranking.service — keep classifyCategory in one place.
-// If you can't import it, paste the identical implementation here.
-const { classifyCategory } = require('@modules/ranking/ranking.service');
-
-
 /* ═══════════════════════════════════════════════════════════════════════════
-   CORE CALCULATION
+   CORE — calculateThresholdsForProduct
    ═══════════════════════════════════════════════════════════════════════════ */
 
-/**
- * calculateThresholdsForProduct(productId)
- *
- * Full pipeline:
- *   1. Dead-stock / no-sales guard            → zero thresholds, liquidate action
- *   2. Insufficient data guard                → skip, return status
- *   3. Recency override (Fix #2 from prev)    → stale products → non-moving
- *   4. Weighted + trimmed avg daily sales     → Fix #2 (burst) + Fix #3 (trend)
- *   5. Lead-time-aware base thresholds        → Fix #1
- *   6. Category + rank multiplier             → Fix #4 (slow mover tightened)
- *   7. Stock awareness                        → Fix #5 (prev)
- */
 const calculateThresholdsForProduct = async (productId) => {
+
+  /* ── Load product ───────────────────────────────────────────────────── */
   const product = await Product.findByPk(productId, {
-    attributes: [
-      'id', 'name', 'rank', 'quantity',
-      'lower_threshold', 'upper_threshold',
-    ],
+    attributes: ['id', 'name', 'rank', 'quantity', 'lower_threshold', 'upper_threshold'],
   });
   if (!product) throw new CustomError(`Product not found: ${productId}`, 404);
 
-  const leadTimeDays = DEFAULT_LEAD_TIME_DAYS;
-
+  /* ── Load all non-reversed sales ────────────────────────────────────── */
   const transactions = await Transaction.findAll({
-    where: { productId, isReversed: false },
+    where:      { productId, isReversed: false },
     attributes: ['quantity', 'date'],
-    order: [['date', 'ASC']],
+    order:      [['date', 'ASC']],
   });
 
-  /* ── Guard: no sales at all ─────────────────────────────────────────── */
-  if (!transactions.length) {
+  /* ── GUARD 1: Never sold ────────────────────────────────────────────── */
+  if (transactions.length === 0) {
     return {
       product_id:               productId,
       product_name:             product.name,
-      calculated_min_threshold: 0,
-      calculated_max_threshold: 0,
-      days_since_last_sale:     null,
-      average_daily_sales:      0,
       category:                 'non-moving',
       status:                   'dead_stock',
-      action:                   'liquidate_or_disable',
+      action:                   'eliminate',
+      calculated_min_threshold: 0,
+      calculated_max_threshold: 0,
+      order_qty_this_month:     0,
+      average_daily_sales:      0,
+      days_since_last_sale:     null,
+      stock_status:             'ok',
+    };
+  }
+
+  /* ── Date metrics ───────────────────────────────────────────────────── */
+  const MS_PER_DAY        = 86_400_000;
+  const now               = new Date();
+  const firstDate         = new Date(transactions[0].date);
+  const lastSaleDate      = new Date(transactions[transactions.length - 1].date);
+  const daysSinceLastSale = Math.ceil((now - lastSaleDate) / MS_PER_DAY);
+  const isStale           = daysSinceLastSale > CONFIG.DEAD_STOCK_DAYS;
+  const rangeEnd          = lastSaleDate > now ? lastSaleDate : now;
+  const daysInData        = Math.max(1, Math.ceil((rangeEnd - firstDate) / MS_PER_DAY));
+
+  /* ── GUARD 2: Not enough history ────────────────────────────────────── */
+  if (daysInData < CONFIG.MIN_DAYS_REQUIRED) {
+    return {
+      product_id:               productId,
+      product_name:             product.name,
+      category:                 null,
+      status:                   'insufficient_data',
+      reason:                   `Only ${daysInData} day(s) of data — need ${CONFIG.MIN_DAYS_REQUIRED}.`,
+      calculated_min_threshold: null,
+      calculated_max_threshold: null,
+      order_qty_this_month:     null,
+      average_daily_sales:      0,
+      days_since_last_sale:     daysSinceLastSale,
+      days_in_data:             daysInData,
+      stock_status:             resolveStockStatus(
+                                  product.quantity,
+                                  product.lower_threshold,
+                                  product.upper_threshold,
+                                ),
+    };
+  }
+
+  /* ── STEP 1: Classify ───────────────────────────────────────────────── */
+  const totalRanked = await Product.count({ where: { rank: { [Op.not]: null } } });
+  const category    = isStale ? 'non-moving' : classifyCategory(product.rank, totalRanked);
+
+  /* ── GUARD 3: Non-moving → eliminate ───────────────────────────────── */
+  if (category === 'non-moving') {
+    return {
+      product_id:               productId,
+      product_name:             product.name,
+      category:                 'non-moving',
+      status:                   'dead_stock',
+      action:                   'eliminate',
+      forced_by_staleness:      isStale,
+      calculated_min_threshold: 0,
+      calculated_max_threshold: 0,
+      order_qty_this_month:     0,
+      average_daily_sales:      0,
+      days_since_last_sale:     daysSinceLastSale,
+      days_in_data:             daysInData,
       stock_status:             resolveStockStatus(product.quantity, 0, 0),
     };
   }
 
-  /* ── Date range ─────────────────────────────────────────────────────── */
-  const now           = new Date();
-  const msPerDay      = 1000 * 60 * 60 * 24;
-  const firstDate     = new Date(transactions[0].date);
-  const lastSaleDate  = new Date(transactions[transactions.length - 1].date);
-  const daysSinceLastSale = Math.ceil((now - lastSaleDate) / msPerDay);
-  const isStale           = daysSinceLastSale > DEAD_STOCK_DAYS;
+  /* ── STEP 2: Average daily sales ────────────────────────────────────── */
+  const dailyMap      = buildDailySalesMap(transactions);   // kept for sale_days_in_history audit field
+  const avgDailySales = calcAvgDailySales(transactions, daysInData);
 
-  const rangeEnd   = lastSaleDate > now ? lastSaleDate : now;
-  const daysInData = Math.max(1, Math.ceil((rangeEnd - firstDate) / msPerDay));
-
-  /* ── Guard: insufficient calendar history ───────────────────────────── */
-  if (daysInData < MIN_DAYS_REQUIRED) {
-    return {
-      product_id:                productId,
-      product_name:              product.name,
-      calculated_min_threshold:  null,
-      calculated_max_threshold:  null,
-      days_used_for_calculation: daysInData,
-      days_since_last_sale:      daysSinceLastSale,
-      average_daily_sales:       0,
-      category:                  null,
-      status:                    'insufficient_data',
-      reason:                    `Only ${daysInData} day(s) of data. Minimum: ${MIN_DAYS_REQUIRED}.`,
-      stock_status:              resolveStockStatus(
-                                   product.quantity,
-                                   product.lower_threshold,
-                                   product.upper_threshold,
-                                 ),
-    };
-  }
-
-  /* ── Category resolution ────────────────────────────────────────────── */
-  const totalRanked = await Product.count({ where: { rank: { [Op.not]: null } } });
-  const category    = isStale ? 'non-moving' : classifyCategory(product.rank, totalRanked);
-
-  /* ── Guard: dead / non-moving → zero thresholds ─────────────────────── */
-  if (category === 'non-moving') {
-    return {
-      product_id:                productId,
-      product_name:              product.name,
-      calculated_min_threshold:  0,
-      calculated_max_threshold:  0,
-      days_used_for_calculation: daysInData,
-      days_since_last_sale:      daysSinceLastSale,
-      average_daily_sales:       0,
-      category:                  'non-moving',
-      status:                    'dead_stock',
-      action:                    'liquidate_or_disable',
-      forced_by_recency:         isStale,
-      stock_status:              resolveStockStatus(product.quantity, 0, 0),
-    };
-  }
-
-  /* ── Fix #2 + #3: Burst-trimmed, recency-weighted demand ────────────── */
-  const dailyMap = buildDailySalesMap(transactions);
+  /* ── STEP 3: Monthly order thresholds ───────────────────────────────── */
   const {
-    weightedAvg,
-    recentAvg,
-    olderAvg,
-    recentSaleDays,
-    olderSaleDays,
-  } = recentWeightedDailySales(dailyMap);
+    minThreshold,
+    maxThreshold,
+    orderQty,
+    monthlyDemand,
+    safetyBuffer,
+    safetyDays,
+  } = calcMonthlyOrderThresholds(avgDailySales, category, product.quantity);
 
-  const { keptDays, droppedDays } = trimmedMeanDailySales(dailyMap);
-  const avgDailySales = weightedAvg; // final demand signal
-
-  /* ── Fix #1: Lead-time-aware base thresholds ────────────────────────── */
-  const { baseMin, baseMax, reorderPoint, coverageDays } =
-    computeLeadTimeAwareThresholds(avgDailySales, leadTimeDays);
-
-  /* ── Fix #4: Category multiplier ────────────────────────────────────── */
-  let multiplier;
-  if (category === 'fast-moving') {
-    // Dynamic: rank #1 → full buffer (1.5/1.3), last fast-mover → no extra (1.0/1.0)
-    const rankFactor = 1 - (product.rank / totalRanked);
-    multiplier = {
-      lower: parseFloat((1 + rankFactor * 0.5).toFixed(3)),
-      upper: parseFloat((1 + rankFactor * 0.3).toFixed(3)),
-    };
-  } else {
-    // Slow-moving: tightened to 0.5/0.4 (was 0.7/0.6)
-    multiplier = CATEGORY_MULTIPLIERS['slow-moving'];
-  }
-
-  const minThreshold = Math.max(1, Math.ceil(baseMin * multiplier.lower));
-  const maxThreshold = Math.max(1, Math.ceil(baseMax * multiplier.upper));
-
-  /* ── Fix #5: Stock status ───────────────────────────────────────────── */
+  /* ── STEP 4: Stock status ───────────────────────────────────────────── */
   const stockStatus = resolveStockStatus(product.quantity, minThreshold, maxThreshold);
 
   return {
-    product_id:                productId,
-    product_name:              product.name,
-    calculated_min_threshold:  minThreshold,
-    calculated_max_threshold:  maxThreshold,
+    product_id:   productId,
+    product_name: product.name,
 
-    // Demand signal breakdown (audit trail)
-    average_daily_sales:       parseFloat(avgDailySales.toFixed(4)),
-    recent_avg_daily_sales:    recentAvg,
-    older_avg_daily_sales:     olderAvg,
-    recent_sale_days:          recentSaleDays,
-    older_sale_days:           olderSaleDays,
-    burst_days_dropped:        droppedDays,
-    burst_days_kept:           keptDays,
-
-    // Lead time breakdown (audit trail)
-    lead_time_days:            leadTimeDays,
-    reorder_point_days:        reorderPoint,   // leadTime + safetyBuffer
-    coverage_days:             coverageDays,   // reorderPoint + restockCycle
-    base_min_threshold:        baseMin,
-    base_max_threshold:        baseMax,
-
-    // Classification + multiplier
+    // ── What matters most ────────────────────────────────────────────────
     category,
-    applied_multiplier:        multiplier,
-    forced_by_recency:         isStale,
-    days_since_last_sale:      daysSinceLastSale,
-    days_used_for_calculation: daysInData,
+    stock_status:             stockStatus,
+    order_qty_this_month:     orderQty,        // ORDER THIS MUCH right now
+    calculated_min_threshold: minThreshold,    // alert if stock drops below this
+    calculated_max_threshold: maxThreshold,    // stock up to this when ordering
 
-    status:                    'calculated',
-    stock_status:              stockStatus,
+    // ── How the numbers were derived ─────────────────────────────────────
+    average_daily_sales: parseFloat(avgDailySales.toFixed(4)),
+    monthly_demand:      monthlyDemand,        // avgDaily × 30
+    safety_buffer_units: safetyBuffer,         // avgDaily × safetyDays
+    safety_days_used:    safetyDays,
+
+    // ── Audit trail ───────────────────────────────────────────────────────
+    current_stock:        product.quantity ?? 0,
+    sale_days_in_history: dailyMap.size,
+    days_in_data:         daysInData,
+    days_since_last_sale: daysSinceLastSale,
+    status:               'calculated',
   };
 };
 
-
 /* ═══════════════════════════════════════════════════════════════════════════
-   SAVE HELPER  (unchanged)
+   SAVE
    ═══════════════════════════════════════════════════════════════════════════ */
 
-const saveThresholds = async (productId, minThreshold, maxThreshold) => {
+const saveThresholds = async (productId, min, max) => {
   await Product.update(
-    { lower_threshold: minThreshold, upper_threshold: maxThreshold },
+    { lower_threshold: min, upper_threshold: max },
     { where: { id: productId } },
   );
 };
 
-
 /* ═══════════════════════════════════════════════════════════════════════════
-   PUBLIC API  (unchanged signatures — drop-in replacement)
+   PUBLIC API
    ═══════════════════════════════════════════════════════════════════════════ */
 
+/** Recalculate + save for one product. */
 const recalculateForOne = async (productId) => {
   const result = await calculateThresholdsForProduct(productId);
+
   if (result.status === 'calculated') {
-    await saveThresholds(productId, result.calculated_min_threshold, result.calculated_max_threshold);
+    await saveThresholds(
+      productId,
+      result.calculated_min_threshold,
+      result.calculated_max_threshold,
+    );
     await invalidateProductCache();
+
+    // Send alert if this product just dropped to or below its min threshold
+    if (result.stock_status === 'understock') {
+      await sendMinThresholdAlert([{
+        product_name:  result.product_name,
+        category:      result.category,
+        current_stock: result.current_stock,
+        min_threshold: result.calculated_min_threshold,
+        units_below:   result.calculated_min_threshold - result.current_stock,
+      }]).catch(() => {}); // fire-and-forget — never let email failure break the API
+    }
   }
+
   return result;
 };
 
+/**
+ * Recalculate + save for ALL products.
+ *
+ * Call this once at the start of each month to get your order list.
+ * The `order_qty_this_month` field on each result tells you exactly
+ * how many units to order from your supplier for that product.
+ */
 const recalculateForAll = async () => {
   const products = await Product.findAll({ attributes: ['id'] });
 
   const results  = [];
-  let   updated  = 0;
-  let   skipped  = 0;
-  let   deadStock = 0;
+  let updated    = 0;
+  let eliminated = 0;
+  let skipped    = 0;
 
   for (const { id } of products) {
     const result = await calculateThresholdsForProduct(id);
@@ -429,23 +418,53 @@ const recalculateForAll = async () => {
       await saveThresholds(id, result.calculated_min_threshold, result.calculated_max_threshold);
       updated++;
     } else if (result.status === 'dead_stock') {
-      // Still save the zero thresholds so reorder service skips them cleanly
       await saveThresholds(id, 0, 0);
-      deadStock++;
-    } else {
-      skipped++;
+      eliminated++;
     }
+    // insufficient_data → leave existing thresholds untouched
+    else { skipped++; }
   }
 
-  if (updated + deadStock > 0) await invalidateProductCache();
+  if (updated + eliminated > 0) await invalidateProductCache();
+
+  // Collect every calculated product whose stock is below min threshold
+  const breached = results
+    .filter(r => r.status === 'calculated' && r.stock_status === 'understock')
+    .map(r => ({
+      product_name:  r.product_name,
+      category:      r.category,
+      current_stock: r.current_stock,
+      min_threshold: r.calculated_min_threshold,
+      units_below:   r.calculated_min_threshold - r.current_stock,
+    }));
+
+  // Send one consolidated email if anything is breached — fire-and-forget
+  sendMinThresholdAlert(breached).catch(() => {});
+
+  // Monthly order list — only products that actually need stock
+  // Sorted by order quantity descending so biggest orders are at the top
+  const monthly_order_list = results
+    .filter(r => r.status === 'calculated' && r.order_qty_this_month > 0)
+    .sort((a, b) => b.order_qty_this_month - a.order_qty_this_month)
+    .map(r => ({
+      product_id:    r.product_id,
+      product_name:  r.product_name,
+      category:      r.category,
+      current_stock: r.current_stock,
+      order_qty:     r.order_qty_this_month,   // tell your supplier this number
+      stock_after:   r.current_stock + r.order_qty_this_month,
+    }));
 
   return {
     summary: {
-      total:     products.length,
-      updated,
-      dead_stock: deadStock,
-      skipped,
+      total:      products.length,
+      updated,     // fast + slow movers recalculated
+      eliminated,  // non-movers zeroed out
+      skipped,     // insufficient history — thresholds unchanged
     },
+    // Hand this list to your supplier — one order, covers the whole month
+    monthly_order_list,
+    // Full per-product detail if needed for debugging
     results,
   };
 };
@@ -454,9 +473,9 @@ module.exports = {
   recalculateForOne,
   recalculateForAll,
   resolveStockStatus,
-  // exported for unit testing individual stages
+  // Exported for unit tests
+  classifyCategory,
   buildDailySalesMap,
-  trimmedMeanDailySales,
-  recentWeightedDailySales,
-  computeLeadTimeAwareThresholds,
+  calcAvgDailySales,
+  calcMonthlyOrderThresholds,
 };
