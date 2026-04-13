@@ -20,7 +20,8 @@ exports.rollbackTransaction = async (req, res, next) => {
 
 exports.getDailyTransactions = async (req, res, next) => {
   try {
-    const data = await transactionService.getDailyTransactions();
+    const { date } = req.query; // optional YYYY-MM-DD
+    const data = await transactionService.getDailyTransactions(date);
     res.sendResponse({ message: 'Daily transactions fetched', data });
   } catch (err) {
     next(err);

@@ -54,7 +54,7 @@ const billing = async (billingData) => {
           totalAmount:    totalNum,
           profit,
           paymentMethod,
-          date:           new Date(),
+          date: summary.billing_date ? new Date(summary.billing_date) : new Date(),
         },
         { transaction: t }
       );
@@ -96,16 +96,19 @@ const rollbackTransaction = async (id) => {
   });
 };
 
-const getTodayRange = () => {
-  const now = new Date();
-  // Use fresh Date objects — never mutate the same instance
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-  const end   = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+const getDateRange = (dateStr) => {
+  // dateStr: optional 'YYYY-MM-DD'. Falls back to today if not provided.
+  const base = dateStr ? new Date(dateStr) : new Date();
+  const y = base.getFullYear(), m = base.getMonth(), d = base.getDate();
+  const start = new Date(y, m, d, 0, 0, 0, 0);
+  const end   = new Date(y, m, d, 23, 59, 59, 999);
   return { start, end };
 };
 
-const getDailyTransactions = async () => {
-  const { start, end } = getTodayRange();
+const getTodayRange = () => getDateRange();
+
+const getDailyTransactions = async (dateStr) => {
+  const { start, end } = getDateRange(dateStr);
   return Transaction.findAll({
     where: { isReversed: false, date: { [Op.between]: [start, end] } },
     order: [['createdAt', 'DESC']],
