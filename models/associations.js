@@ -9,6 +9,7 @@ const Supplier = require('./supplier');
 const ProductSupplier = require('./productsupplier');
 const PurchaseOrder = require('./PurchaseOrder');
 const PurchaseOrderItem = require('./PurchaseOrderItem');
+const Expense = require('./Expense');
 
 // PurchaseOrder <-> PurchaseOrderItem
 PurchaseOrder.hasMany(PurchaseOrderItem, { foreignKey: 'order_id', as: 'PurchaseOrderItems' });
@@ -23,6 +24,10 @@ PurchaseOrderItem.belongsTo(Supplier, { foreignKey: 'supplier_id', as: 'Supplier
 // ProductSupplier <-> Supplier
 ProductSupplier.belongsTo(Supplier, { foreignKey: 'supplier_id' });
 
+// Expense <-> Supplier (optional: a purchase expense may reference a supplier)
+Expense.belongsTo(Supplier, { foreignKey: 'supplier_id', as: 'Supplier' });
+Supplier.hasMany(Expense,   { foreignKey: 'supplier_id', as: 'Expenses' });
+
 module.exports = {
   Product,
   Transaction,
@@ -35,4 +40,5 @@ module.exports = {
   ProductSupplier,
   PurchaseOrder,
   PurchaseOrderItem,
+  Expense,
 };

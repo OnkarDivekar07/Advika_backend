@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 
 const ROUTES = {
-//  expense:       require('@modules/expense').routes,
+  expense:       require('@modules/expense').routes,
   user:          require('@modules/user').routes,
   product:       require('@modules/product').routes,
   transaction:   require('@modules/transaction').routes,
@@ -34,7 +34,7 @@ router.use('/purchase-orders', ROUTES.purchaseOrder);
 router.use('/suppliers',      ROUTES.supplier);
 router.use('/webhook',        ROUTES.webhook);
 router.use('/ranking',        ROUTES.ranking);
-//router.use('/expenses',       ROUTES.expense);
+router.use('/expenses',       ROUTES.expense);
 router.use('/threshold',      ROUTES.threshold);
 
 router.use((req, res) => {
