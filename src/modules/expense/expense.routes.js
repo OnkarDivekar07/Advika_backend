@@ -1,29 +1,49 @@
 const express = require('express');
 const router  = express.Router();
-const ctrl    = require('./expense.controller');
+
+const ctrl = require('./expense.controller');
+
 const { validateCreate, validateUpdate } = require('./expense.validation');
 const validateRequest = require('@middlewares/validateRequest');
 const authenticate    = require('@middlewares/authenticate');
 const authorizeAdmin  = require('@middlewares/authorizeAdmin');
 
+// ─────────────────────────────────────────────────────────────
+// 🔐 सुरक्षा (all routes protected)
+// ─────────────────────────────────────────────────────────────
 router.use(authenticate, authorizeAdmin);
 
-// ── Named routes MUST come before /:id to avoid param capture ─────────────
-router.get('/summary',          ctrl.getSummary);
-router.get('/expense-summary',  ctrl.getSummary);       // alias: old frontend path
-router.get('/profit-loss',      ctrl.getProfitLoss);
-router.get('/balance-sheet',    ctrl.getRealBalanceSheet);
-router.get('/real-balance-sheet', ctrl.getRealBalanceSheet); // alias
+// ─────────────────────────────────────────────────────────────
+// 📊 Reports / Analytics
+// ─────────────────────────────────────────────────────────────
 
-// ── Collection routes ──────────────────────────────────────────────────────
-router.get('/expenses',         ctrl.getAll);            // alias: old frontend path
-router.get('/',                 ctrl.getAll);
-router.post('/expense',         validateCreate, validateRequest, ctrl.create); // alias: old frontend path
-router.post('/',                validateCreate, validateRequest, ctrl.create);
+// GET /expenses/summary?from=YYYY-MM-DD&to=YYYY-MM-DD
+router.get('/summary', ctrl.getSummary);
 
-// ── Single-resource routes ─────────────────────────────────────────────────
-router.put('/:id',              validateUpdate, validateRequest, ctrl.update);
-router.delete('/expense/:id',   ctrl.remove);           // alias: old frontend path
-router.delete('/:id',           ctrl.remove);
+// Optional (used elsewhere in your UI)
+router.get('/profit-loss', ctrl.getProfitLoss);
+router.get('/balance-sheet', ctrl.getRealBalanceSheet);
+
+// ─────────────────────────────────────────────────────────────
+// 📦 Collection (LIST + CREATE)
+// ─────────────────────────────────────────────────────────────
+
+// GET /expenses?from&to
+// POST /expenses
+router
+  .route('/')
+  .get(ctrl.getAll)
+  .post(validateCreate, validateRequest, ctrl.create);
+
+// ─────────────────────────────────────────────────────────────
+// 📄 Single Expense
+// ─────────────────────────────────────────────────────────────
+
+// PUT /expenses/:id
+// DELETE /expenses/:id
+router
+  .route('/:id')
+  .put(validateUpdate, validateRequest, ctrl.update)
+  .delete(ctrl.remove);
 
 module.exports = router;
