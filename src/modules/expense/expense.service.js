@@ -10,11 +10,13 @@ const CustomError = require('@utils/customError');
 
 const buildDateRange = (from, to) => {
   const now = new Date();
+  // Parse dates as local midnight (not UTC) to avoid IST ±5:30h boundary mismatches.
+  // e.g. "2026-04-01T00:00:00.000Z" = March 31 18:30 IST → wrong day boundary.
   const start = from
-    ? new Date(`${from}T00:00:00.000Z`)
+    ? new Date(`${from}T00:00:00`)          // local midnight
     : new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
   const end = to
-    ? new Date(`${to}T23:59:59.999Z`)
+    ? new Date(`${to}T23:59:59.999`)        // local end-of-day
     : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
   return { start, end };
 };

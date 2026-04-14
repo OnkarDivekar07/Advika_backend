@@ -7,224 +7,165 @@
 
 /**
  * @swagger
- * /api/expenses/expense:
+ * /api/expenses/:
+ *   get:
+ *     summary: Get all expenses with optional date / type filters
+ *     tags: [expenses]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: from
+ *         schema: { type: string, format: date }
+ *         example: "2026-04-01"
+ *       - in: query
+ *         name: to
+ *         schema: { type: string, format: date }
+ *         example: "2026-04-30"
+ *       - in: query
+ *         name: expense_type
+ *         schema:
+ *           type: string
+ *           enum: [purchase, transport, miscellaneous]
+ *       - in: query
+ *         name: supplier_id
+ *         schema: { type: string, format: uuid }
+ *     responses:
+ *       200:
+ *         description: Expenses fetched
+ *
  *   post:
  *     summary: Create a new expense
  *     tags: [expenses]
+ *     security:
+ *       - bearerAuth: []
  *     requestBody:
  *       required: true
  *       content:
  *         application/json:
  *           schema:
  *             type: object
- *             required: [amount, expense_type, date]
+ *             required: [expense_type, description, payment_method]
  *             properties:
- *               amount:
- *                 type: number
- *                 example: 1500
  *               expense_type:
  *                 type: string
- *                 example: rent
- *               date:
+ *                 enum: [purchase, transport, miscellaneous]
+ *               description:
  *                 type: string
- *                 format: date
- *                 example: "2026-03-30"
- *               supplier_id:
+ *               payment_method:
+ *                 type: string
+ *                 enum: [cash, online]
+ *               total_bill:
+ *                 type: number
+ *                 description: Purchase lump-sum mode
+ *               unit_cost:
+ *                 type: number
+ *                 description: Transport/misc amount OR purchase itemised mode
+ *               quantity:
  *                 type: integer
- *                 example: 2
- *               note:
- *                 type: string
- *                 example: Monthly shop rent
+ *                 description: Required with unit_cost for itemised purchase
+ *               supplier_id: { type: string, format: uuid }
+ *               notes: { type: string }
+ *               expense_date: { type: string, format: date }
  *     responses:
  *       201:
- *         description: Expense recorded
+ *         description: Expense created
  */
 
 /**
  * @swagger
- * /api/expenses/expenses:
+ * /api/expenses/summary:
  *   get:
- *     summary: Get all expenses with filters
+ *     summary: Get today and this month expense summary
  *     tags: [expenses]
- *     parameters:
- *       - in: query
- *         name: from
- *         schema:
- *           type: string
- *           format: date
- *         example: "2026-03-01"
- *       - in: query
- *         name: to
- *         schema:
- *           type: string
- *           format: date
- *         example: "2026-03-31"
- *       - in: query
- *         name: expense_type
- *         schema:
- *           type: string
- *         example: rent
- *       - in: query
- *         name: supplier_id
- *         schema:
- *           type: integer
- *         example: 2
+ *     security:
+ *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Expenses fetched
- */
-
-/**
- * @swagger
- * /api/expenses/expense/{id}:
- *   delete:
- *     summary: Delete an expense
- *     tags: [expenses]
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: integer
- *         example: 5
- *     responses:
- *       200:
- *         description: Expense deleted
- *       404:
- *         description: Expense not found
+ *         description: Expense summary fetched
  */
 
 /**
  * @swagger
  * /api/expenses/profit-loss:
  *   get:
- *     summary: Generate balance sheet
+ *     summary: Get P&L report for a date range
  *     tags: [expenses]
+ *     security:
+ *       - bearerAuth: []
  *     parameters:
  *       - in: query
  *         name: from
- *         schema:
- *           type: string
- *           format: date
- *         example: "2026-03-01"
+ *         schema: { type: string, format: date }
  *       - in: query
  *         name: to
- *         schema:
- *           type: string
- *           format: date
- *         example: "2026-03-31"
+ *         schema: { type: string, format: date }
  *     responses:
  *       200:
- *         description: Balance sheet generated
- *         content:
- *           application/json:
- *             schema:
- *               allOf:
- *                 - $ref: '#/components/schemas/SuccessResponse'
- *                 - type: object
- *                   properties:
- *                     data:
- *                       type: object
- *                       properties:
- *                         assets:
- *                           type: object
- *                           properties:
- *                             cash:
- *                               type: number
- *                               example: 50000
- *                             inventory:
- *                               type: number
- *                               example: 120000
- *                             receivables:
- *                               type: number
- *                               example: 30000
- *                         liabilities:
- *                           type: object
- *                           properties:
- *                             payables:
- *                               type: number
- *                               example: 40000
- *                             loans:
- *                               type: number
- *                               example: 20000
- *                         equity:
- *                           type: number
- *                           example: 140000
+ *         description: P&L fetched
  */
 
 /**
  * @swagger
- * /api/expenses/expense-summary:
+ * /api/expenses/balance-sheet:
  *   get:
- *     summary: Get expense summary
+ *     summary: Get real-time balance sheet
  *     tags: [expenses]
+ *     security:
+ *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Expense summary
- *         content:
- *           application/json:
- *             schema:
- *               allOf:
- *                 - $ref: '#/components/schemas/SuccessResponse'
- *                 - type: object
- *                   properties:
- *                     data:
- *                       type: object
- *                       properties:
- *                         total_expense:
- *                           type: number
- *                           example: 50000
- *                         by_type:
- *                           type: object
- *                           example:
- *                             rent: 20000
- *                             salary: 15000
- *                             electricity: 5000
- *                             misc: 10000
+ *         description: Balance sheet fetched
  */
-
 
 /**
  * @swagger
- * /api/expenses/real-balance-sheet:
- *   get:
- *     summary: Get real-time balance sheet (no date filter)
+ * /api/expenses/{id}:
+ *   put:
+ *     summary: Update an expense
  *     tags: [expenses]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               description: { type: string }
+ *               expense_type: { type: string, enum: [purchase, transport, miscellaneous] }
+ *               payment_method: { type: string, enum: [cash, online] }
+ *               total_bill: { type: number }
+ *               unit_cost: { type: number }
+ *               quantity: { type: integer }
+ *               supplier_id: { type: string, format: uuid }
+ *               notes: { type: string }
+ *               expense_date: { type: string, format: date }
  *     responses:
  *       200:
- *         description: Real balance sheet generated
- *         content:
- *           application/json:
- *             schema:
- *               allOf:
- *                 - $ref: '#/components/schemas/SuccessResponse'
- *                 - type: object
- *                   properties:
- *                     data:
- *                       type: object
- *                       properties:
- *                         assets:
- *                           type: object
- *                           properties:
- *                             cash:
- *                               type: number
- *                               example: 60000
- *                             inventory:
- *                               type: number
- *                               example: 150000
- *                             receivables:
- *                               type: number
- *                               example: 25000
- *                         liabilities:
- *                           type: object
- *                           properties:
- *                             payables:
- *                               type: number
- *                               example: 30000
- *                             loans:
- *                               type: number
- *                               example: 10000
- *                         equity:
- *                           type: number
- *                           example: 195000
+ *         description: Expense updated
+ *       404:
+ *         description: Expense not found
+ *
+ *   delete:
+ *     summary: Delete an expense
+ *     tags: [expenses]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     responses:
+ *       204:
+ *         description: Expense deleted
+ *       404:
+ *         description: Expense not found
  */
