@@ -15,10 +15,15 @@ const upload = require('@config/multer');
 
 router.post('/addproduct',      authenticate, authorizeAdmin, validateAddProduct, validateRequest, ctrl.addProduct);
 router.get('/getproduct',       authenticate, authorizeAdmin, ctrl.getProduct);
-router.get('/:id',              ctrl.getProductById);
 router.put('/updateproduct/:id', authenticate, authorizeAdmin, validateUpdateProduct, validateRequest, ctrl.updateProduct);
 router.delete('/removeproduct/:id', authenticate, authorizeAdmin, ctrl.deleteProduct);
 router.post('/add-stock',       authenticate, authorizeAdmin, validateAddStock, validateRequest, ctrl.addStock);
+
+// ── Stock Logs (must be before /:id wildcard) ─────────────────────────────
+router.get('/stock-logs',                  authenticate, authorizeAdmin, ctrl.getStockLogs);
+router.post('/stock-logs/:id/rollback',    authenticate, authorizeAdmin, ctrl.rollbackStockLog);
+
+router.get('/:id',              ctrl.getProductById);
 router.put('/:id/unit',         authenticate, authorizeAdmin, validateUpdateUnit, validateRequest, ctrl.updateDefaultUnit);
 router.put('/:id/marathi-name', validateMarathiName, validateRequest, ctrl.updateMarathiName);
 router.post('/:id/upload-image', upload.single('image'), ctrl.uploadProductImage);

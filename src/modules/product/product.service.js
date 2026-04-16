@@ -2,6 +2,7 @@ const { Op } = require('sequelize');
 const sharp = require('sharp');
 const Product = require('@root/models/product');
 const PurchaseOrderItem = require('@root/models/PurchaseOrderItem');
+const StockLog = require('@root/models/StockLog');
 const sequelize = require('@utils/db');
 const { uploadToS3, deleteFromS3 } = require('@utils/AWSUploads');
 const CustomError = require('@utils/customError');
@@ -90,7 +91,8 @@ const addStock = async ({ productId, addQuantity, price, lower_threshold, upper_
     const qty = toNum(addQuantity, parseInt);
     if (!qty || qty <= 0) throw new CustomError('addQuantity must be a positive integer', 400);
 
-    const updateData = { quantity: product.quantity + qty };
+    const quantityBefore = product.quantity;
+    const updateData = { quantity: quantityBefore + qty };
 
     const parsedPrice = toNum(price, parseFloat);
     if (parsedPrice !== null && parsedPrice >= 0) updateData.price = parsedPrice;
@@ -102,6 +104,23 @@ const addStock = async ({ productId, addQuantity, price, lower_threshold, upper_
     if (parsedUpper !== null) updateData.upper_threshold = parsedUpper;
 
     await product.update(updateData, { transaction: t });
+
+    // ── Write stock log ────────────────────────────────────────────────────
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    await StockLog.create(
+      {
+        productId,
+        productName:    product.name,
+        quantityAdded:  qty,
+        quantityBefore,
+        quantityAfter:  updateData.quantity,
+        priceAtUpdate:  parsedPrice !== null ? parsedPrice : null,
+        isRolledBack:   false,
+        logDate:        today,
+      },
+      { transaction: t }
+    );
+    // ──────────────────────────────────────────────────────────────────────
 
     const item = await PurchaseOrderItem.findOne({
       where: {
@@ -189,6 +208,57 @@ const updateDefaultUnit = async (id, defaultUnit) => {
   return { id: product.id, name: product.name, defaultUnit };
 };
 
+// ─────────────────────────────────────────────────────────────
+// 📋 STOCK LOGS — list by date
+// ─────────────────────────────────────────────────────────────
+const getStockLogs = async ({ date } = {}) => {
+  // Default to today if no date given
+  const targetDate = date || new Date().toISOString().slice(0, 10);
+
+  return StockLog.findAll({
+    where: { logDate: targetDate },
+    include: [
+      {
+        model: Product,
+        as: 'Product',
+        attributes: ['id', 'name', 'marathiName', 'quantity'],
+      },
+    ],
+    order: [['createdAt', 'DESC']],
+  });
+};
+
+// ─────────────────────────────────────────────────────────────
+// ↩️ ROLLBACK STOCK LOG — subtract the added quantity back
+// ─────────────────────────────────────────────────────────────
+const rollbackStockLog = async (logId) => {
+  return sequelize.transaction(async (t) => {
+    const log = await StockLog.findByPk(logId, { transaction: t });
+    if (!log) throw new CustomError('Stock log not found', 404);
+    if (log.isRolledBack) throw new CustomError('This stock update has already been rolled back', 400);
+
+    const product = await Product.findByPk(log.productId, { transaction: t });
+    if (!product) throw new CustomError('Product no longer exists', 404);
+
+    const newQty = product.quantity - log.quantityAdded;
+    if (newQty < 0) throw new CustomError(
+      `Cannot rollback: current stock (${product.quantity}) is less than the quantity added (${log.quantityAdded})`,
+      400
+    );
+
+    await product.update({ quantity: newQty }, { transaction: t });
+    await log.update({ isRolledBack: true }, { transaction: t });
+
+    return {
+      logId:          log.id,
+      productId:      product.id,
+      productName:    product.name,
+      quantityRemoved: log.quantityAdded,
+      newQuantity:    newQty,
+    };
+  });
+};
+
 module.exports = {
   addProducts,
   getAllProducts,
@@ -200,4 +270,6 @@ module.exports = {
   deleteImage,
   updateMarathiName,
   updateDefaultUnit,
+  getStockLogs,
+  rollbackStockLog,
 };

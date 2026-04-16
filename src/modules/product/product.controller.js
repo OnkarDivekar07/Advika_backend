@@ -101,3 +101,29 @@ exports.updateDefaultUnit = async (req, res, next) => {
     next(err);
   }
 };
+
+// ─────────────────────────────────────────────────────────────
+// 📋 GET STOCK LOGS
+// GET /products/stock-logs?date=YYYY-MM-DD
+// ─────────────────────────────────────────────────────────────
+exports.getStockLogs = async (req, res, next) => {
+  try {
+    const data = await productService.getStockLogs({ date: req.query.date });
+    res.sendResponse({ message: 'Stock logs fetched', data });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─────────────────────────────────────────────────────────────
+// ↩️ ROLLBACK STOCK LOG
+// POST /products/stock-logs/:id/rollback
+// ─────────────────────────────────────────────────────────────
+exports.rollbackStockLog = async (req, res, next) => {
+  try {
+    const data = await productService.rollbackStockLog(req.params.id);
+    res.sendResponse({ message: 'Stock update rolled back successfully', data });
+  } catch (err) {
+    next(err);
+  }
+};
