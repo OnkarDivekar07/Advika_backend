@@ -211,6 +211,7 @@ const getRealBalanceSheet = async () => {
   const repayments = await Repayment.findAll();
   const liabilities = sum(repayments, 'amountOwed');
 
+  
   return {
     inventoryValue,
     liabilities,
