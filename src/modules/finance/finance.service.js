@@ -69,7 +69,7 @@ const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
  * Profit First framework (adapted for this business):
  *   Sales            = all non-reversed transaction totals
  *   COGS             = purchase expenses (inventory buys) — target 60% of sales
- *   Real Revenue     = Sales - COGS
+ *   Real Revenue     = Sales − Actual COGS  (actual cash out, not 60% target)
  *   OpEx (purchase)  = same as COGS  (money available to buy inventory)
  *   OpEx (other)     = transport + miscellaneous — target 40% of Real Revenue
  *   Profit           = target 15% of Real Revenue (manual confirmation)
@@ -95,7 +95,7 @@ async function computeProfitFirstNumbers(start, end) {
   const opexOtherActual  = round2(sumArr(otherExpenses,    'total_amount'));
 
   const cogsTarget       = round2(sales * 0.60);
-  const realRevenue      = round2(sales - cogsTarget);   // uses target, not actual
+  const realRevenue      = round2(sales - cogsActual);   // Profit First: actual cash movement, not target
 
   const opexOtherTarget  = round2(realRevenue * 0.40);
   const profitTarget     = round2(realRevenue * 0.15);
