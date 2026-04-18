@@ -26,6 +26,7 @@ router.post('/stock-logs/:id/rollback',    authenticate, authorizeAdmin, ctrl.ro
 router.get('/:id',              ctrl.getProductById);
 router.put('/:id/unit',         authenticate, authorizeAdmin, validateUpdateUnit, validateRequest, ctrl.updateDefaultUnit);
 router.put('/:id/marathi-name', validateMarathiName, validateRequest, ctrl.updateMarathiName);
+router.put('/:id/lead-buffer',  authenticate, authorizeAdmin, ctrl.updateLeadBuffer);
 router.post('/:id/upload-image', upload.single('image'), ctrl.uploadProductImage);
 router.delete('/:id/delete-image', ctrl.deleteProductImage);
 

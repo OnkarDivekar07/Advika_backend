@@ -50,6 +50,8 @@ const getAllProducts = async () =>
       'defaultUnit',
       'lower_threshold',
       'upper_threshold',
+      'leadDays',
+      'bufferDays',
       'salesCount',
       'rank'
     ]
@@ -59,6 +61,26 @@ const getProductById = async (id) => {
   const product = await Product.findByPk(id);
   if (!product) throw new CustomError('Product not found', 404);
   return product;
+};
+
+const updateLeadBuffer = async (id, { leadDays, bufferDays }) => {
+  const product = await Product.findByPk(id);
+  if (!product) throw new CustomError('Product not found', 404);
+
+  const updates = {};
+  const lead   = toNum(leadDays,   parseInt);
+  const buffer = toNum(bufferDays, parseInt);
+
+  if (lead   !== null && lead   >= 0) updates.leadDays   = lead;
+  if (buffer !== null && buffer >= 0) updates.bufferDays = buffer;
+
+  if (Object.keys(updates).length === 0) {
+    throw new CustomError('Provide at least one of leadDays or bufferDays', 400);
+  }
+
+  await product.update(updates);
+  await invalidateProductCache();
+  return { id: product.id, name: product.name, ...updates };
 };
 
 const updateProduct = async (id, data) => {
@@ -264,6 +286,7 @@ module.exports = {
   getAllProducts,
   getProductById,
   updateProduct,
+  updateLeadBuffer,
   deleteProduct,
   addStock: addStockAndInvalidate, // wraps addStock + cache invalidation
   uploadImage,

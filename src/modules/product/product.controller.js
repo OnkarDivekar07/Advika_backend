@@ -84,6 +84,15 @@ exports.deleteProductImage = async (req, res, next) => {
   }
 };
 
+exports.updateLeadBuffer = async (req, res, next) => {
+  try {
+    const result = await productService.updateLeadBuffer(req.params.id, req.body);
+    res.sendResponse({ message: 'Lead & buffer days updated successfully', data: result });
+  } catch (err) {
+    next(err);
+  }
+};
+
 exports.updateMarathiName = async (req, res, next) => {
   try {
     await productService.updateMarathiName(req.params.id, req.body.marathiName);

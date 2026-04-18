@@ -42,6 +42,22 @@ const Product = sequelize.define('Product', {
     allowNull: true,
   },
 
+  // ── Lead & Buffer days (per-product override for threshold calculation) ───
+  // leadDays:   calendar days from placing an order to stock arriving at shop
+  // bufferDays: safety stock in days on top of the 30-day order cycle
+  // Defaults match the former global CONFIG values so existing behaviour is
+  // preserved until an operator explicitly changes them.
+  leadDays: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 15,
+  },
+  bufferDays: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 7,
+  },
+
   // ── Ranking fields ────────────────────────────────────────────────────────
   // Incremented by +1 for every billing transaction that includes this product.
   // Tracks HOW OFTEN a product sells (frequency), not how many units were sold.

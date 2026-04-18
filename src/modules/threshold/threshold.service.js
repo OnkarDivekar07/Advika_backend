@@ -59,29 +59,31 @@ const { sendMinThresholdAlert }   = require('./threshold.alert');
 /* ═══════════════════════════════════════════════════════════════════════════
    CONFIGURATION
    To tune the system: only touch values in this block.
+   Per-product leadDays and bufferDays override ORDER_CYCLE_DAYS and
+   SAFETY_DAYS respectively when set on the product record.
    ═══════════════════════════════════════════════════════════════════════════ */
 
 const CONFIG = {
-  // One order covers this many days of demand
-  ORDER_CYCLE_DAYS: 40,
+  // Maximum days a single order cycle should cover (hard cap — max stock)
+  ORDER_CYCLE_DAYS: 30,
 
-  // Safety buffer by category (extra days of stock on top of monthly demand)
-  // Fast movers get more buffer — stockout cost is higher
-  // Slow movers get less buffer — less cash tied up
+  // Default safety buffer by category — used ONLY when product.bufferDays is 0
+  // Operators should set bufferDays per-product via the Product Images page.
   SAFETY_DAYS: {
     'fast-moving': 15,
     'slow-moving': 7,
   },
 
-  // Minimum days of history needed before we trust the average daily sales
-  MIN_DAYS_REQUIRED: 60,
+  // Default lead time — used ONLY when product.leadDays is 0
+  LEAD_TIME_DAYS: 15,
+
+  // Minimum sales records needed in the 90-day window before we trust the average.
+  // Lowered from 60 because the window is now fixed at 90 days — 30 days of data
+  // within that window is enough signal for a reliable avgDailySales.
+  MIN_DAYS_REQUIRED: 30,
 
   // Product not sold in this many days → forced non-moving
   DEAD_STOCK_DAYS: 60,
-
-  // Days from placing the order to stock arriving at your shop.
-  // Stock consumed during this window must already be on the shelf.
-  LEAD_TIME_DAYS: 15,
 
   // Classification cutoffs (by sales rank percentile)
   FAST_CUTOFF: 0.33,   // top 33% → fast-moving
@@ -167,33 +169,38 @@ const calcAvgDailySales = (transactions, daysInData) => {
 /**
  * Compute the min/max stock thresholds for a one-order-per-month model.
  *
- * max_threshold  = avgDaily × (ORDER_CYCLE_DAYS + safetyDays + LEAD_TIME_DAYS)
- *   → Stock up to this level when you place your monthly order.
- *   → Covers full month demand + lead time consumption + safety cushion.
+ * Per-product overrides:
+ *   productLeadDays   — replaces CONFIG.LEAD_TIME_DAYS when > 0
+ *   productBufferDays — replaces CONFIG.SAFETY_DAYS[category] when > 0
  *
- * min_threshold  = avgDaily × safetyDays
- *   → Never let stock fall below this.
- *   → If it does before month-end, you under-ordered last month.
+ * max stock is always capped at ORDER_CYCLE_DAYS (30) + lead + buffer so a
+ * single order never covers more than one month of demand.
  *
+ * max_threshold  = avgDaily × (ORDER_CYCLE_DAYS + safetyDays + leadTimeDays)
+ * min_threshold  = avgDaily × (safetyDays + leadTimeDays)
  * order_quantity = max_threshold − current_stock
- *   → Order exactly this much. No more, no less.
  *
  * @param {number} avgDailySales
  * @param {'fast-moving'|'slow-moving'} category
- * @param {number} currentStock - product's current qty on hand
- * @returns {{ minThreshold, maxThreshold, orderQty, monthlyDemand, safetyBuffer, safetyDays, leadTimeDays }}
+ * @param {number} currentStock
+ * @param {number} productLeadDays   — from product.leadDays   (0 = use default)
+ * @param {number} productBufferDays — from product.bufferDays (0 = use default)
  */
-const calcMonthlyOrderThresholds = (avgDailySales, category, currentStock) => {
-  const safetyDays    = CONFIG.SAFETY_DAYS[category];
-  const leadTimeDays  = CONFIG.LEAD_TIME_DAYS;
-  const monthlyDemand = Math.ceil(avgDailySales * CONFIG.ORDER_CYCLE_DAYS);
+const calcMonthlyOrderThresholds = (avgDailySales, category, currentStock, productLeadDays = 0, productBufferDays = 0) => {
+  // Per-product values take priority; fall back to global CONFIG
+  const safetyDays   = productBufferDays > 0 ? productBufferDays : (CONFIG.SAFETY_DAYS[category] ?? 7);
+  const leadTimeDays = productLeadDays   > 0 ? productLeadDays   : CONFIG.LEAD_TIME_DAYS;
+
+  // Hard cap: one order covers at most ORDER_CYCLE_DAYS (30) of demand
+  const orderCycleDays = CONFIG.ORDER_CYCLE_DAYS;
+
+  const monthlyDemand = Math.ceil(avgDailySales * orderCycleDays);
   const safetyBuffer  = Math.ceil(avgDailySales * safetyDays);
   const leadBuffer    = Math.ceil(avgDailySales * leadTimeDays);
 
-  const maxThreshold = monthlyDemand + safetyBuffer + leadBuffer;   // stock UP TO here
-  const minThreshold = safetyBuffer + leadBuffer;                   // never DROP below here — covers safety + lead time
+  const maxThreshold = monthlyDemand + safetyBuffer;   // order cycle + buffer only — lead time is when you ORDER, not how much you HOLD
+  const minThreshold = leadBuffer    + safetyBuffer;   // reorder point — must have this much when you place the order
 
-  // How much to order this month — floor at 0 (don't order if overstocked)
   const orderQty = Math.max(0, maxThreshold - (currentStock ?? 0));
 
   return {
@@ -227,13 +234,16 @@ const calculateThresholdsForProduct = async (productId) => {
 
   /* ── Load product ───────────────────────────────────────────────────── */
   const product = await Product.findByPk(productId, {
-    attributes: ['id', 'name', 'rank', 'quantity', 'lower_threshold', 'upper_threshold'],
+    attributes: ['id', 'name', 'rank', 'quantity', 'lower_threshold', 'upper_threshold', 'leadDays', 'bufferDays'],
   });
   if (!product) throw new CustomError(`Product not found: ${productId}`, 404);
 
-  /* ── Load all non-reversed sales ────────────────────────────────────── */
+  /* ── Load last 90 days of non-reversed sales (rolling window) ───────── */
+  const windowStart = new Date();
+  windowStart.setDate(windowStart.getDate() - 90);
+
   const transactions = await Transaction.findAll({
-    where:      { productId, isReversed: false },
+    where:      { productId, isReversed: false, date: { [Op.gte]: windowStart } },
     attributes: ['quantity', 'date'],
     order:      [['date', 'ASC']],
   });
@@ -262,8 +272,10 @@ const calculateThresholdsForProduct = async (productId) => {
   const lastSaleDate      = new Date(transactions[transactions.length - 1].date);
   const daysSinceLastSale = Math.ceil((now - lastSaleDate) / MS_PER_DAY);
   const isStale           = daysSinceLastSale > CONFIG.DEAD_STOCK_DAYS;
-  const rangeEnd          = lastSaleDate > now ? lastSaleDate : now;
-  const daysInData        = Math.max(1, Math.ceil((rangeEnd - firstDate) / MS_PER_DAY));
+  // Use actual days from first sale to today, capped at 90.
+  // This means a 30-day-old product divides by 30 (accurate), not 90 (understated).
+  // A 200-day-old product still divides by 90 (rolling window, seasonal decay fixed).
+  const daysInData        = Math.min(90, Math.max(1, Math.ceil((now - firstDate) / MS_PER_DAY)));
 
   /* ── GUARD 2: Not enough history ────────────────────────────────────── */
   if (daysInData < CONFIG.MIN_DAYS_REQUIRED) {
@@ -322,7 +334,13 @@ const calculateThresholdsForProduct = async (productId) => {
     monthlyDemand,
     safetyBuffer,
     safetyDays,
-  } = calcMonthlyOrderThresholds(avgDailySales, category, product.quantity);
+  } = calcMonthlyOrderThresholds(
+    avgDailySales,
+    category,
+    product.quantity,
+    product.leadDays   ?? 0,
+    product.bufferDays ?? 0,
+  );
 
   /* ── STEP 4: Stock status ───────────────────────────────────────────── */
   const stockStatus = resolveStockStatus(product.quantity, minThreshold, maxThreshold);
@@ -343,6 +361,8 @@ const calculateThresholdsForProduct = async (productId) => {
     monthly_demand:      monthlyDemand,        // avgDaily × 30
     safety_buffer_units: safetyBuffer,         // avgDaily × safetyDays
     safety_days_used:    safetyDays,
+    lead_days_used:      product.leadDays   ?? CONFIG.LEAD_TIME_DAYS,
+    buffer_days_used:    product.bufferDays ?? CONFIG.SAFETY_DAYS[category],
 
     // ── Audit trail ───────────────────────────────────────────────────────
     current_stock:        product.quantity ?? 0,

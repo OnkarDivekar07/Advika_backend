@@ -13,8 +13,9 @@ const sequelize = require('@utils/db');
  *   At least ONE product for that supplier is AT or BELOW lower_threshold.
  *
  * Inclusion condition (which products get added to the order):
- *   Any product in that supplier group that is below upper_threshold / 2
- *   OR at/below lower_threshold — i.e. anything that isn't comfortably stocked.
+ *   Every product from that supplier that is below upper_threshold.
+ *   Once a supplier order is triggered, the whole parcel is topped up —
+ *   no point paying for delivery twice.
  *
  * Order qty = upper_threshold - current_quantity (fill to max).
  *
@@ -66,16 +67,13 @@ const generateAutoOrders = async () => {
       if (!hasTriggered) continue;
 
       // ── Inclusion check ──────────────────────────────────────────────────
-      // Include any product that is below the halfway point to upper_threshold
+      // Since we're already ordering from this supplier, bundle EVERY product
+      // from them that isn't fully stocked. This makes the parcel economical —
+      // one delivery covers everything, not just the product that triggered.
       const itemsToCreate = [];
 
       for (const product of supplierProds) {
-        const halfThreshold = product.upper_threshold / 2;
-        const needsRestock  = product.quantity <= product.lower_threshold
-                           || product.quantity < halfThreshold;
-
-        if (!needsRestock) continue;
-
+        // Only include if there's actually something to top up
         const orderQty = product.upper_threshold - product.quantity;
         if (orderQty <= 0) continue;
 

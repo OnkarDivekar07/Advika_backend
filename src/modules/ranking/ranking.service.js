@@ -122,7 +122,7 @@ const classifyCategory = (rank, totalRanked) => {
   const slowCutoff = Math.ceil(totalRanked * 0.66);
   if (rank <= fastCutoff) return 'fast-moving';
   if (rank <= slowCutoff) return 'slow-moving';
-  return 'slow-moving';
+  return 'non-moving';
 };
 
 /**

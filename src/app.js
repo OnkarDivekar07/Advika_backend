@@ -15,6 +15,7 @@ const errorHandler = require('@middlewares/errorHandler');
 const responseMiddleware = require('@middlewares/responseMiddleware');
 const emailService = require('@modules/email/email.service');
 const { generateAutoOrders } = require('@services/autoOrder/autoOrderGenerator');
+const { recalculateForAll } = require('@modules/threshold/threshold.service');
 
 const app = express();
 
@@ -39,9 +40,18 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
 app.use('/api', routes);
 
 // ─── Cron Jobs ────────────────────────────────────────────────────────────
-cron.schedule('0 6 * * *', () => {
-  console.log('Running auto-order generation cron...');
-  generateAutoOrders().catch((err) => console.error('Auto-order cron failed:', err.message));
+cron.schedule('0 6 * * *', async () => {
+  console.log('[Cron] Step 1/2 — Recalculating thresholds from latest sales...');
+  try {
+    const result = await recalculateForAll();
+    console.log(`[Cron] Thresholds updated: ${result.summary.updated} products, ${result.summary.eliminated} eliminated, ${result.summary.skipped} skipped.`);
+  } catch (err) {
+    console.error('[Cron] Threshold recalculation failed:', err.message);
+    // Don't return — still run auto-orders with existing thresholds
+  }
+
+  console.log('[Cron] Step 2/2 — Generating auto-orders from fresh thresholds...');
+  generateAutoOrders().catch((err) => console.error('[Cron] Auto-order generation failed:', err.message));
 }, { timezone: 'Asia/Kolkata' });
 
 cron.schedule('0 7 * * *', () => {
