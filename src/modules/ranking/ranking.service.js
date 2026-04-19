@@ -118,8 +118,8 @@ const computeRanks = (products) => {
  */
 const classifyCategory = (rank, totalRanked) => {
   if (!rank) return 'non-moving';
-  const fastCutoff = Math.ceil(totalRanked * 0.33);
-  const slowCutoff = Math.ceil(totalRanked * 0.66);
+  const fastCutoff = Math.ceil(totalRanked * 0.25);
+  const slowCutoff = Math.ceil(totalRanked * 0.75);
   if (rank <= fastCutoff) return 'fast-moving';
   if (rank <= slowCutoff) return 'slow-moving';
   return 'non-moving';
