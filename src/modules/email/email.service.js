@@ -39,7 +39,7 @@ const createTransporter = () =>
  * Products that need reorder are sorted: rank 1 (fast-mover) first.
  */
 const sendLowStockEmail = async () => {
-  const reorderProducts = await getReorderProductsRanked();
+  const reorderProducts = (await getReorderProductsRanked()).filter((p) => p.category !== 'non-moving');
 
   if (!reorderProducts.length) {
     return { sent: false, message: 'No products require reorder.' };
