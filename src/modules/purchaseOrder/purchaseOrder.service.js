@@ -5,6 +5,7 @@ const Product = require('@root/models/product');
 const Supplier = require('@root/models/supplier');
 const { sendToSupplier } = require('@services/supplier/sendToSupplier');
 const CustomError = require('@utils/customError');
+const { maskSupplier } = require('@utils/maskSupplier');
 
 // ─── Valid item status transitions ─────────────────────────────────────────
 const VALID_TRANSITIONS = {
@@ -33,6 +34,7 @@ const assertValidTransition = (currentStatus, nextStatus) => {
 /**
  * Returns pending orders with each item's supplier response status
  * so partial fulfilment (some items available, some not) is visible.
+ * Supplier name & phone are masked before leaving the server.
  */
 const getPendingOrders = async () => {
   const orders = await PurchaseOrder.findAll({
@@ -50,9 +52,16 @@ const getPendingOrders = async () => {
     order: [['createdAt', 'DESC']],
   });
 
-  // Annotate each order with a fulfilment summary so the frontend can show partial status
   return orders.map((order) => {
-    const items = order.PurchaseOrderItems;
+    const plain = order.toJSON();
+    const items = plain.PurchaseOrderItems;
+
+    // Mask supplier on every item before sending to frontend
+    plain.PurchaseOrderItems = items.map((item) => ({
+      ...item,
+      Supplier: maskSupplier(item.Supplier),
+    }));
+
     const summary = {
       total:         items.length,
       pending:       items.filter((i) => i.status === 'pending').length,
@@ -61,14 +70,13 @@ const getPendingOrders = async () => {
       not_available: items.filter((i) => i.status === 'not_available').length,
       received:      items.filter((i) => i.status === 'received').length,
     };
-    return { ...order.toJSON(), fulfilmentSummary: summary };
+    return { ...plain, fulfilmentSummary: summary };
   });
 };
 
 // ─── Approve ───────────────────────────────────────────────────────────────
 
 const approveOrder = async (orderId) => {
-  // First fetch: check order exists and get items with Product association
   const order = await PurchaseOrder.findByPk(orderId, {
     include: [
       {
@@ -83,7 +91,6 @@ const approveOrder = async (orderId) => {
   if (order.status !== 'pending') throw new CustomError('Only pending orders can be approved', 400);
   if (!order.PurchaseOrderItems.length) throw new CustomError('Order has no items', 400);
 
-  // Transition the order and all its pending items → approved (inside a transaction)
   await sequelize.transaction(async (t) => {
     const fresh = await PurchaseOrder.findByPk(orderId, { transaction: t, lock: t.LOCK.UPDATE });
     assertValidTransition(fresh.status, 'approved');
@@ -111,19 +118,15 @@ const approveOrder = async (orderId) => {
     ],
   });
 
-  // Only send approved items — don't re-notify items already in ordered/received etc.
   const approvedItems = updatedOrder.PurchaseOrderItems.filter((i) => i.status === 'approved');
 
   try {
-    // Pass the live Sequelize instances directly (NOT toJSON())
-    // so sendToSupplier can call item.update()
     await sendToSupplier({
       supplier_id: updatedOrder.supplier_id,
       id: updatedOrder.id,
       PurchaseOrderItems: approvedItems,
     });
   } catch (err) {
-    // All WhatsApp sends failed — revert so admin can retry
     console.error('All supplier notifications failed — reverting order to pending:', err.message);
 
     await sequelize.transaction(async (t) => {
@@ -149,7 +152,6 @@ const rejectOrder = async (orderId) => {
   const order = await PurchaseOrder.findByPk(orderId);
   if (!order) throw new CustomError('Order not found', 404);
 
-  // Order-level: 'pending' → 'rejected' (we keep 'rejected' as a separate status from 'cancelled')
   if (order.status !== 'pending') {
     throw new CustomError('Only pending orders can be rejected', 400);
   }
@@ -158,7 +160,6 @@ const rejectOrder = async (orderId) => {
     order.status = 'rejected';
     await order.save({ transaction: t });
 
-    // Item-level: pending/approved items → cancelled
     await PurchaseOrderItem.update(
       { status: 'cancelled' },
       { where: { order_id: orderId, status: ['pending', 'approved'] }, transaction: t }

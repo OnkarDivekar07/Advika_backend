@@ -1,6 +1,6 @@
 require('dotenv').config();
 
-const required = ['DB_NAME', 'DB_USER', 'DB_PASSWORD', 'DB_HOST', 'JWT_SECRET'];
+const required = ['DB_NAME', 'DB_USER', 'DB_PASSWORD', 'DB_HOST', 'JWT_SECRET', 'SUPPLIER_ENCRYPTION_KEY'];
 
 required.forEach((name) => {
   if (!process.env[name]) {
@@ -23,4 +23,5 @@ module.exports = {
   waAccessToken: process.env.WA_ACCESS_TOKEN,
   verifyToken:    process.env.VERIFY_TOKEN,
   redisUrl:       process.env.REDIS_URL || 'redis://127.0.0.1:6379',
+  supplierEncryptionKey: process.env.SUPPLIER_ENCRYPTION_KEY,
 };

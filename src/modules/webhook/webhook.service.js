@@ -3,6 +3,7 @@ const Product = require('@root/models/product');
 const Supplier = require('@root/models/supplier');
 const ProductSupplier = require('@root/models/productsupplier');
 const { sendProductMessage } = require('@services/whatsapp/whatsappService');
+const nodemailer = require('nodemailer');
 
 // Items can only be acted on when they are in 'ordered' status
 const ACTIONABLE_STATUSES = ['ordered'];
@@ -20,6 +21,41 @@ const parsePayload = (payload) => {
     action: payload.slice(0, lastIdx),   // "AVAILABLE" or "NOT_AVAILABLE"
     itemId: payload.slice(lastIdx + 1),  // the UUID
   };
+};
+
+/**
+ * Sends an admin alert email when all suppliers for a product are exhausted.
+ * Uses the same nodemailer transporter already used by email.service.js.
+ */
+const sendEscalationExhaustedAlert = async ({ productName, productId, orderId, itemId }) => {
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD || !process.env.RECIVER_EMAIL) {
+    console.error('[Alert] Email env vars missing — cannot send escalation alert');
+    return;
+  }
+
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASSWORD },
+  });
+
+  await transporter.sendMail({
+    from: `"Advika Flowers" <${process.env.EMAIL_USER}>`,
+    to: process.env.RECIVER_EMAIL,
+    subject: '⚠️ Supplier Escalation Exhausted — Manual Action Required',
+    html: `
+      <h2>⚠️ All Suppliers Exhausted</h2>
+      <p>No further suppliers are available for the following item. <strong>Manual ordering is required.</strong></p>
+      <table style="border-collapse:collapse;font-family:sans-serif;">
+        <tr><td style="padding:6px 12px;font-weight:bold;">Product</td><td style="padding:6px 12px;">${productName}</td></tr>
+        <tr><td style="padding:6px 12px;font-weight:bold;">Product ID</td><td style="padding:6px 12px;">${productId}</td></tr>
+        <tr><td style="padding:6px 12px;font-weight:bold;">Order ID</td><td style="padding:6px 12px;">${orderId}</td></tr>
+        <tr><td style="padding:6px 12px;font-weight:bold;">Item ID</td><td style="padding:6px 12px;">${itemId}</td></tr>
+      </table>
+      <p style="margin-top:16px;color:#c00;">Please source this product manually and update inventory accordingly.</p>
+    `,
+  });
+
+  console.log(`[Alert] Escalation-exhausted email sent for product ${productName} (${productId})`);
 };
 
 const handleButtonReply = async (data) => {
@@ -79,6 +115,19 @@ const handleButtonReply = async (data) => {
 
     if (!nextMapping) {
       console.log(`No further suppliers for item ${item.id} — escalation exhausted`);
+
+      // ── Admin alert: all suppliers exhausted ────────────────────────────
+      const product = await Product.findByPk(item.product_id);
+      try {
+        await sendEscalationExhaustedAlert({
+          productName: product?.name ?? 'Unknown',
+          productId:   item.product_id,
+          orderId:     item.order_id,
+          itemId:      item.id,
+        });
+      } catch (alertErr) {
+        console.error('[Alert] Failed to send escalation-exhausted email:', alertErr.message);
+      }
       return;
     }
 
@@ -108,7 +157,6 @@ const handleButtonReply = async (data) => {
 
     console.log(`Escalated → new item ${newItem.id} for supplier ${nextMapping.Supplier.name} (priority ${nextMapping.priority})`);
 
-    // Load the product directly — don't rely on optional chaining on generated methods
     const product = await Product.findByPk(item.product_id);
     if (!product) {
       console.error(`Product not found for item ${newItem.id} — cannot send WhatsApp`);

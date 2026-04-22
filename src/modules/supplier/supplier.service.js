@@ -1,11 +1,17 @@
 const Supplier = require('@root/models/supplier');
 const ProductSupplier = require('@root/models/productsupplier');
 const CustomError = require('@utils/customError');
+const { maskSupplier } = require('@utils/maskSupplier');
 
-const getAll = async () => Supplier.findAll({ where: { is_active: true } });
+const getAll = async () => {
+  const suppliers = await Supplier.findAll({ where: { is_active: true } });
+  // Mask name & phone before sending to frontend
+  return suppliers.map((s) => maskSupplier(s.toJSON()));
+};
 
 const create = async ({ name, phone }) => {
   if (!name?.trim()) throw new CustomError('Supplier name is required', 400);
+  // Model setter auto-encrypts name & phone before DB write
   return Supplier.create({ name: name.trim(), phone: phone || null, is_active: true });
 };
 
