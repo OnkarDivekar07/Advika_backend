@@ -35,10 +35,16 @@ const mapProductSupplier = async ({ product_id, suppliers }) => {
 
 const getByProduct = async (productId) => {
   if (!productId) throw new CustomError('productId is required', 400);
-  return ProductSupplier.findAll({
+  const rows = await ProductSupplier.findAll({
     where: { product_id: productId },
     include: [{ model: Supplier, as: 'Supplier', attributes: ['id', 'name'] }],
     order: [['priority', 'ASC']],
+  });
+  // Mask supplier name before sending to frontend (same as getAll)
+  return rows.map((row) => {
+    const plain = row.toJSON();
+    plain.Supplier = maskSupplier(plain.Supplier);
+    return plain;
   });
 };
 
