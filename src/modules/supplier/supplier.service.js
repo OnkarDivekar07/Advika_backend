@@ -33,10 +33,19 @@ const mapProductSupplier = async ({ product_id, suppliers }) => {
   });
 };
 
+const getByProduct = async (productId) => {
+  if (!productId) throw new CustomError('productId is required', 400);
+  return ProductSupplier.findAll({
+    where: { product_id: productId },
+    include: [{ model: Supplier, as: 'Supplier', attributes: ['id', 'name'] }],
+    order: [['priority', 'ASC']],
+  });
+};
+
 const archive = async (id) => {
   const supplier = await Supplier.findByPk(id);
   if (!supplier) throw new CustomError('Supplier not found', 404);
   await supplier.update({ is_active: false });
 };
 
-module.exports = { getAll, create, mapProductSupplier, archive };
+module.exports = { getAll, create, mapProductSupplier, getByProduct, archive };

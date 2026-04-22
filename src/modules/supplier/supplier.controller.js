@@ -14,6 +14,13 @@ exports.create = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+exports.getByProduct = async (req, res, next) => {
+  try {
+    const data = await supplierService.getByProduct(req.params.productId);
+    res.sendResponse({ message: 'Mappings fetched', data });
+  } catch (err) { next(err); }
+};
+
 exports.mapProductSupplier = async (req, res, next) => {
   try {
     const data = await supplierService.mapProductSupplier(req.body);

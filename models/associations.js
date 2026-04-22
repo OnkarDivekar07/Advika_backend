@@ -23,7 +23,7 @@ PurchaseOrderItem.belongsTo(Product, { foreignKey: 'product_id', as: 'Product' }
 PurchaseOrderItem.belongsTo(Supplier, { foreignKey: 'supplier_id', as: 'Supplier' });
 
 // ProductSupplier <-> Supplier
-ProductSupplier.belongsTo(Supplier, { foreignKey: 'supplier_id' });
+ProductSupplier.belongsTo(Supplier, { foreignKey: 'supplier_id', as: 'Supplier' });
 
 // Expense <-> Supplier (optional: a purchase expense may reference a supplier)
 Expense.belongsTo(Supplier, { foreignKey: 'supplier_id', as: 'Supplier' });
