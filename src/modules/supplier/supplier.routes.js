@@ -9,6 +9,7 @@ const authorizeAdmin = require('@middlewares/authorizeAdmin');
 router.get('/',                authenticate, authorizeAdmin, ctrl.getAll);
 router.post('/',               authenticate, authorizeAdmin, validateCreate, validateRequest, ctrl.create);
 router.get('/product/:productId', authenticate, authorizeAdmin, ctrl.getByProduct);
+router.get('/all-mappings',        authenticate, authorizeAdmin, ctrl.getAllMappings);
 router.post('/map-product',    authenticate, authorizeAdmin, validateMapProduct, validateRequest, ctrl.mapProductSupplier);
 router.delete('/:id',          authenticate, authorizeAdmin, ctrl.archive);
 

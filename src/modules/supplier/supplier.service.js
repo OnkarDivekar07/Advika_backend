@@ -47,10 +47,26 @@ const getByProduct = async (productId) => {
   });
 };
 
+const getAllMappings = async () => {
+  const rows = await ProductSupplier.findAll({
+    include: [{ model: Supplier, as: 'Supplier', attributes: ['id', 'name'] }],
+    order: [['priority', 'ASC']],
+  });
+  // Group by product_id, mask supplier name — same masking as getByProduct
+  const grouped = {};
+  rows.forEach((row) => {
+    const plain = row.toJSON();
+    plain.Supplier = maskSupplier(plain.Supplier);
+    if (!grouped[plain.product_id]) grouped[plain.product_id] = [];
+    grouped[plain.product_id].push(plain);
+  });
+  return grouped;
+};
+
 const archive = async (id) => {
   const supplier = await Supplier.findByPk(id);
   if (!supplier) throw new CustomError('Supplier not found', 404);
   await supplier.update({ is_active: false });
 };
 
-module.exports = { getAll, create, mapProductSupplier, getByProduct, archive };
+module.exports = { getAll, create, mapProductSupplier, getByProduct, getAllMappings, archive };
