@@ -28,6 +28,13 @@ exports.mapProductSupplier = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+exports.getAllMappings = async (req, res, next) => {
+  try {
+    const data = await supplierService.getAllMappings();
+    res.sendResponse({ message: 'All mappings fetched', data });
+  } catch (err) { next(err); }
+};
+
 exports.archive = async (req, res, next) => {
   try {
     await supplierService.archive(req.params.id);
