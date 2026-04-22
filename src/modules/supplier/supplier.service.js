@@ -26,11 +26,10 @@ const mapProductSupplier = async ({ product_id, suppliers }) => {
     priority:    s.priority ?? 1,
   }));
 
-  // Fix: use updateOnDuplicate so re-mapping a product's suppliers
-  // updates the priority instead of crashing on unique constraint
-  return ProductSupplier.bulkCreate(mappings, {
-    updateOnDuplicate: ['priority'],
-  });
+  // Delete all existing mappings for this product, then insert fresh.
+  // This prevents stale rows accumulating when priorities are reassigned.
+  await ProductSupplier.destroy({ where: { product_id } });
+  return ProductSupplier.bulkCreate(mappings);
 };
 
 const getByProduct = async (productId) => {
