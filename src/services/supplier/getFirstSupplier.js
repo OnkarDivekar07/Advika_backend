@@ -4,7 +4,7 @@ const Supplier = require('@root/models/supplier');
 const getFirstSupplier = async (productId) => {
   const mapping = await ProductSupplier.findOne({
     where: { product_id: productId },
-    include: [{ model: Supplier, where: { is_active: true } }],
+    include: [{ model: Supplier, as: 'Supplier', where: { is_active: true } }],
     order: [['priority', 'ASC']],
   });
 

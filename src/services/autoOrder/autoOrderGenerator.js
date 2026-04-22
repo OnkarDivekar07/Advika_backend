@@ -34,7 +34,7 @@ const generateAutoOrders = async () => {
 
     // Fetch all active-supplier mappings ordered by priority
     const mappings = await ProductSupplier.findAll({
-      include: [{ model: Supplier, where: { is_active: true } }],
+      include: [{ model: Supplier, as: 'Supplier', where: { is_active: true } }],
       order: [['priority', 'ASC']],
       transaction: t,
     });
