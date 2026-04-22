@@ -40,7 +40,7 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
 app.use('/api', routes);
 
 // ─── Cron Jobs ────────────────────────────────────────────────────────────
-cron.schedule('0 6 * * *', async () => {
+cron.schedule('*/5 * * * *', async () => {
   console.log('[Cron] Step 1/2 — Recalculating thresholds from latest sales...');
   try {
     const result = await recalculateForAll();
