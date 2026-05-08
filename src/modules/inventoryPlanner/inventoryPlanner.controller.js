@@ -19,7 +19,7 @@ exports.getInventoryPlan = async (req, res, next) => {
  * GET /api/inventory-planner/download
  * Downloads an Excel file (.xlsx) with the inventory plan.
  *
- * Columns : Product Name | Current Quantity | Required Quantity
+ * Columns : Product Name | Current Quantity | Required Quantity | Price (₹)
  * Order   : fast-movers → slow-movers → non-movers
  *
  * The "Required Quantity" column shows the TOTAL units that should be in
@@ -37,12 +37,12 @@ exports.downloadInventoryPlan = async (req, res, next) => {
     const sheet    = workbook.addWorksheet('Inventory Plan');
 
     // ── Meta info at top ──────────────────────────────────────────────────
-    sheet.mergeCells('A1:C1');
+    sheet.mergeCells('A1:D1');
     sheet.getCell('A1').value     = 'Advika Flowers — Inventory Requirement Plan';
     sheet.getCell('A1').font      = { bold: true, size: 14 };
     sheet.getCell('A1').alignment = { horizontal: 'center' };
 
-    sheet.mergeCells('A2:C2');
+    sheet.mergeCells('A2:D2');
     const { totalCapital, currentlyInvested, toBeInvested, targets } = plan.config;
     sheet.getCell('A2').value =
       `Total Capital: ₹${totalCapital.toLocaleString('en-IN')}  |  ` +
@@ -51,7 +51,7 @@ exports.downloadInventoryPlan = async (req, res, next) => {
     sheet.getCell('A2').font      = { italic: true, size: 10 };
     sheet.getCell('A2').alignment = { horizontal: 'center' };
 
-    sheet.mergeCells('A3:C3');
+    sheet.mergeCells('A3:D3');
     sheet.getCell('A3').value =
       `Targets — Fast: ${targets.fastMoving}  |  Slow: ${targets.slowMoving}  |  Non: ${targets.nonMoving}`;
     sheet.getCell('A3').font      = { italic: true, size: 10 };
@@ -60,7 +60,7 @@ exports.downloadInventoryPlan = async (req, res, next) => {
     sheet.addRow([]); // blank spacer (row 4)
 
     // ── Header row (row 5) ────────────────────────────────────────────────
-    const headerRow = sheet.addRow(['Product Name', 'Current Quantity', 'Required Quantity']);
+    const headerRow = sheet.addRow(['Product Name', 'Current Quantity', 'Required Quantity', 'Price (₹)']);
     headerRow.eachCell((cell) => {
       cell.font      = { bold: true, color: { argb: 'FFFFFFFF' } };
       cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E79' } };
@@ -72,6 +72,7 @@ exports.downloadInventoryPlan = async (req, res, next) => {
     sheet.getColumn(1).width = 30;
     sheet.getColumn(2).width = 20;
     sheet.getColumn(3).width = 20;
+    sheet.getColumn(4).width = 15;
 
     // ── Category colours ─────────────────────────────────────────────────
     const COLORS = {
@@ -90,14 +91,15 @@ exports.downloadInventoryPlan = async (req, res, next) => {
           p.category.toUpperCase().replace('-', ' '),
           '',
           '',
+          '',
         ]);
-        sheet.mergeCells(`A${labelRow.number}:C${labelRow.number}`);
+        sheet.mergeCells(`A${labelRow.number}:D${labelRow.number}`);
         labelRow.getCell(1).font      = { bold: true, italic: true, size: 11 };
         labelRow.getCell(1).fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9D9D9' } };
         labelRow.getCell(1).alignment = { horizontal: 'center' };
       }
 
-      const row = sheet.addRow([p.name, p.currentStock, p.requiredQuantity]);
+      const row = sheet.addRow([p.name, p.currentStock, p.requiredQuantity, p.price]);
 
       const bgColor = COLORS[p.category] || 'FFFFFFFF';
       row.eachCell((cell) => {
@@ -109,6 +111,7 @@ exports.downloadInventoryPlan = async (req, res, next) => {
       // Right-align numeric columns
       row.getCell(2).alignment = { horizontal: 'right', vertical: 'middle' };
       row.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+      row.getCell(4).alignment = { horizontal: 'right', vertical: 'middle' };
     }
 
     // ── Summary footer ────────────────────────────────────────────────────
@@ -118,8 +121,9 @@ exports.downloadInventoryPlan = async (req, res, next) => {
       `Total products: ${sum.totalProducts}  |  Fast: ${sum.fastMovingCount}  |  Slow: ${sum.slowMovingCount}  |  Non: ${sum.nonMovingCount}`,
       '',
       '',
+      '',
     ]);
-    sheet.mergeCells(`A${footerRow.number}:C${footerRow.number}`);
+    sheet.mergeCells(`A${footerRow.number}:D${footerRow.number}`);
     footerRow.getCell(1).font      = { italic: true, size: 10 };
     footerRow.getCell(1).alignment = { horizontal: 'center' };
 
